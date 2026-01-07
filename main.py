@@ -37,10 +37,9 @@ def get_drive_service():
     return build('drive', 'v3', credentials=scoped_credentials)
 
 def upload_to_drive(files, folder_name):
-    """Створює підпапку в архіві, завантажує файли та робить їх публічними"""
     service = get_drive_service()
     
-    # 1. Створення підпапки всередині "АРХІВ ФОТО БПЛА"
+    # 1. Створення підпапки
     folder_metadata = {
         'name': folder_name,
         'mimeType': 'application/vnd.google-apps.folder',
@@ -49,16 +48,19 @@ def upload_to_drive(files, folder_name):
     folder = service.files().create(body=folder_metadata, fields='id').execute()
     folder_id = folder.get('id')
     
-    # 2. Надання доступу "Будь-хто з посиланням" для цієї підпапки
-    public_permission = {'type': 'anyone', 'role': 'viewer'}
-    service.permissions().create(fileId=folder_id, body=public_permission).execute()
+    # 2. Спроба надати доступ "Будь-хто з посиланням"
+    try:
+        public_permission = {'type': 'anyone', 'role': 'viewer'}
+        service.permissions().create(fileId=folder_id, body=public_permission).execute()
+    except Exception as e:
+        # Якщо публічний доступ заборонений політикою організації, просто пропускаємо цей крок
+        st.warning("Публічний доступ не надано (обмеження Google Диску), але файли завантажені.")
     
     links = []
     for uploaded_file in files:
         file_metadata = {'name': uploaded_file.name, 'parents': [folder_id]}
         media = MediaIoBaseUpload(io.BytesIO(uploaded_file.getvalue()), 
                                   mimetype=uploaded_file.type, resumable=True)
-        # Завантаження файлу
         file = service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
         links.append(file.get('webViewLink'))
     
