@@ -4,56 +4,74 @@ import pandas as pd
 import plotly.express as px
 from docx import Document
 import io
-import os
 from datetime import datetime, time
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 from google.oauth2 import service_account
 
-# --- НАЛАШТУВАННЯ ---
+# --- КОНФІГУРАЦІЯ СТОРІНКИ ---
 st.set_page_config(page_title="Кабінет пілота БпЛА", layout="wide", page_icon="🛡️")
 
-# Константи
+# Мілітарі стиль
+st.markdown("""
+    <style>
+    .main { background-color: #f8f9fa; }
+    .stButton>button { width: 100%; border-radius: 8px; background-color: #2b4231; color: white; height: 3em; font-weight: bold; }
+    .duration-box { background-color: #f1f3f5; padding: 10px; border-radius: 8px; text-align: center; border: 1px solid #dee2e6; color: #2b4231; }
+    </style>
+    """, unsafe_allow_html=True)
+
+# --- КОНСТАНТИ ---
 UNITS = ["впс Кодима", "віпс Шершенці", "віпс Загнітків", "впс Станіславка", "віпс Тимкове", "віпс Чорна", "впс Окни", "віпс Ткаченкове", "віпс Гулянка", "віпс Новосеменівка", "впс Великокомарівка", "віпс Павлівка", "впс Велика Михайлівка", "віпс Слов'яносербка", "віпс Гребеники", "впс Степанівка", "віпс Кучурган", "віпс Лиманське", "віпс Лучинське", "УПЗ"]
 DRONES = ["DJI Mavic 3 Pro", "DJI Mavic 3E", "DJI Mavic 3T", "DJI Matrice 30T", "DJI Matrice 300", "Autel Evo Max 4T", "Skydio X2D", "Puma LE"]
 ADMIN_PASSWORD = "admin_secret"
 
-# --- ПІДКЛЮЧЕННЯ ДО GOOGLE SERVICES ---
-conn = st.connection("gsheets", type=GSheetsConnection)
+# ID ВАШОЇ ПАПКИ АРХІВУ
+PARENT_FOLDER_ID = "1mqeXnoFcMpleZP-iuj5HkN_SETv3Zgzh"
 
+# --- ПІДКЛЮЧЕННЯ GOOGLE DRIVE API ---
 def get_drive_service():
-    """Створення сервісу Google Drive через Secrets"""
     info = st.secrets["connections"]["gsheets"]
     credentials = service_account.Credentials.from_service_account_info(info)
     scoped_credentials = credentials.with_scopes(['https://www.googleapis.com/auth/drive'])
     return build('drive', 'v3', credentials=scoped_credentials)
 
-def create_drive_folder(folder_name):
-    """Створює папку на Диску та повертає її ID"""
+def upload_to_drive(files, folder_name):
+    """Створює підпапку в архіві, завантажує файли та робить їх публічними"""
     service = get_drive_service()
-    file_metadata = {
+    
+    # 1. Створення підпапки всередині "АРХІВ ФОТО БПЛА"
+    folder_metadata = {
         'name': folder_name,
-        'mimeType': 'application/vnd.google-apps.folder'
+        'mimeType': 'application/vnd.google-apps.folder',
+        'parents': [PARENT_FOLDER_ID]
     }
-    file = service.files().create(body=file_metadata, fields='id').execute()
-    return file.get('id')
-
-def upload_files_to_drive(files, folder_id):
-    """Завантажує список файлів у вказану папку"""
-    service = get_drive_service()
+    folder = service.files().create(body=folder_metadata, fields='id').execute()
+    folder_id = folder.get('id')
+    
+    # 2. Надання доступу "Будь-хто з посиланням" для цієї підпапки
+    public_permission = {'type': 'anyone', 'role': 'viewer'}
+    service.permissions().create(fileId=folder_id, body=public_permission).execute()
+    
     links = []
     for uploaded_file in files:
         file_metadata = {'name': uploaded_file.name, 'parents': [folder_id]}
         media = MediaIoBaseUpload(io.BytesIO(uploaded_file.getvalue()), 
                                   mimetype=uploaded_file.type, resumable=True)
+        # Завантаження файлу
         file = service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
         links.append(file.get('webViewLink'))
+    
     return links
 
 # --- ДОПОМІЖНІ ФУНКЦІЇ ---
+conn = st.connection("gsheets", type=GSheetsConnection)
+
 def load_data():
-    try: return conn.read()
-    except: return pd.DataFrame(columns=["Дата", "Час завдання", "Підрозділ", "Оператор", "Дрон", "Маршрут", "Взльот", "Посадка", "Тривалість (хв)", "Дистанція (м)", "Результат", "Примітки", "Посилання на фото"])
+    try:
+        return conn.read()
+    except:
+        return pd.DataFrame(columns=["Дата", "Час завдання", "Підрозділ", "Оператор", "Дрон", "Маршрут", "Взльот", "Посадка", "Тривалість (хв)", "Дистанція (м)", "Результат", "Примітки", "Посилання на фото"])
 
 def calculate_duration(start, end):
     s = start.hour * 60 + start.minute
@@ -61,20 +79,46 @@ def calculate_duration(start, end):
     d = e - s
     return d if d >= 0 else d + 1440
 
+def generate_docx(df_filtered, template_path):
+    try:
+        doc = Document(template_path)
+        flights_summary = ""
+        for (pilot, drone), group in df_filtered.groupby(['Оператор', 'Дрон']):
+            details = " , ".join([f"{r['Взльот']}-{r['Посадка']}-{r['Дистанція (м)']}м" for _, r in group.iterrows()])
+            flights_summary += f"{pilot} - {len(group)} польотів, {drone}, {details}; \n"
+
+        replacements = {
+            "{{DATE}}": str(df_filtered['Дата'].iloc[0]),
+            "{{UNIT}}": str(df_filtered['Підрозділ'].iloc[0]),
+            "{{FLIGHTS_LIST}}": flights_summary,
+            "{{ROUTE}}": str(df_filtered['Маршрут'].iloc[0]),
+            "{{RESULTS}}": f"{df_filtered['Результат'].iloc[0]}. {df_filtered['Примітки'].iloc[0]}"
+        }
+        for p in doc.paragraphs:
+            for k, v in replacements.items():
+                if k in p.text: p.text = p.text.replace(k, v)
+        
+        buf = io.BytesIO()
+        doc.save(buf)
+        buf.seek(0)
+        return buf
+    except:
+        return None
+
 # --- СТАН СЕСІЇ ---
 if 'temp_flights' not in st.session_state:
     st.session_state.temp_flights = []
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
 
-# --- ЛОГІКА ВХОДУ ---
+# --- ВХІД ---
 if not st.session_state.logged_in:
     st.title("🛡️ Кабінет пілота БпЛА")
-    role = st.radio("Режим:", ["Пілот", "Адміністратор"], horizontal=True)
+    role = st.radio("Вхід як:", ["Пілот", "Адміністратор"], horizontal=True)
     with st.container(border=True):
         if role == "Пілот":
             u = st.selectbox("Підрозділ:", UNITS)
-            n = st.text_input("Звання та прізвище:")
+            n = st.text_input("Прізвище:")
             d = st.selectbox("Дрон:", DRONES)
             if st.button("Увійти"):
                 if n:
@@ -86,8 +130,8 @@ if not st.session_state.logged_in:
                 if p == ADMIN_PASSWORD:
                     st.session_state.logged_in, st.session_state.role = True, "Admin"
                     st.rerun()
-
 else:
+    # --- ГОЛОВНИЙ ІНТЕРФЕЙС ---
     st.sidebar.title(f"👤 {st.session_state.role}")
     if st.sidebar.button("Вийти"):
         st.session_state.logged_in = False
@@ -98,29 +142,27 @@ else:
         tab1, tab2, tab3 = st.tabs(["🚀 До польотів", "📜 Звітність", "📊 Аналітика"])
 
         with tab1:
-            st.header("Нова зміна")
+            st.header("Дані зміни")
             with st.container(border=True):
                 c1, c2, c3, c4 = st.columns([1.5, 1, 1, 2])
                 m_date = c1.date_input("Дата")
-                m_start = c2.time_input("З", value=time(8, 0))
-                m_end = c3.time_input("До", value=time(20, 0))
+                m_start = c2.time_input("З", value=time(8,0))
+                m_end = c3.time_input("До", value=time(20,0))
                 m_route = c4.text_input("Маршрут")
 
-            st.write("---")
-            with st.expander("📝 Додати новий виліт", expanded=True):
-                col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
-                t_off = col1.time_input("Взльот", value=time(9, 0), step=60)
-                t_land = col2.time_input("Посадка", value=time(9, 30), step=60)
-                f_dur = calculate_duration(t_off, t_land)
-                col3.info(f"⏳ {f_dur} хв")
-                f_dist = col4.number_input("Дистанція (м)", min_value=0)
-                
-                f_res = st.selectbox("Результат", ["Без ознак порушення", "Затримання"])
-                f_notes = st.text_area("Коментар")
-                f_files = st.file_uploader("📸 Скріншоти польоту", accept_multiple_files=True)
+            st.divider()
+            with st.expander("📝 Додати виліт", expanded=True):
+                col1, col2, col3, col4 = st.columns([1,1,1,1])
+                t_off = col1.time_input("Взльот", value=time(9,0), step=60)
+                t_land = col2.time_input("Посадка", value=time(9,30), step=60)
+                dur = calculate_duration(t_off, t_land)
+                col3.info(f"⏳ {dur} хв")
+                dist = col4.number_input("Дистанція (м)", min_value=0)
+                res = st.selectbox("Результат", ["Без ознак порушення", "Затримання"])
+                note = st.text_area("Примітки")
+                files = st.file_uploader("📸 Скріншоти", accept_multiple_files=True)
 
-                if st.button("➕ Додати виліт у чергу"):
-                    # Зберігаємо дані + об'єкти файлів у сесію
+                if st.button("➕ Додати у чергу"):
                     st.session_state.temp_flights.append({
                         "Дата": m_date.strftime("%d.%m.%Y"),
                         "Час завдання": f"{m_start.strftime('%H:%M')}-{m_end.strftime('%H:%M')}",
@@ -130,51 +172,74 @@ else:
                         "Маршрут": m_route,
                         "Взльот": t_off.strftime("%H:%M"),
                         "Посадка": t_land.strftime("%H:%M"),
-                        "Тривалість (хв)": f_dur,
-                        "Дистанція (м)": f_dist,
-                        "Результат": f_res,
-                        "Примітки": f_notes,
-                        "file_objs": f_files # Тимчасово тримаємо файли тут
+                        "Тривалість (хв)": dur,
+                        "Дистанція (м)": dist,
+                        "Результат": res,
+                        "Примітки": note,
+                        "files": files 
                     })
                     st.rerun()
 
             if st.session_state.temp_flights:
-                st.subheader("Черга на завантаження")
-                tmp_df = pd.DataFrame(st.session_state.temp_flights)
-                st.dataframe(tmp_df[["Взльот", "Посадка", "Тривалість (хв)", "Результат"]], use_container_width=True)
+                st.subheader("Вильоти до відправки")
+                st.dataframe(pd.DataFrame(st.session_state.temp_flights)[["Взльот", "Посадка", "Результат"]])
                 
-                if st.button("🚀 ВІДПРАВИТИ ВСЕ В БАЗУ ТА НА ДИСК"):
-                    with st.spinner("Завантаження файлів на Google Drive..."):
-                        # 1. Створюємо папку для всієї зміни
+                if st.button("🚀 ВІДПРАВИТИ ВСІ ДАНІ В БАЗУ ТА НА ДИСК"):
+                    with st.spinner("Завантаження даних та фото..."):
+                        # Назва папки для конкретного звіту
                         folder_name = f"{m_date.strftime('%d.%m.%Y')}_{st.session_state.user['unit']}"
-                        folder_id = create_drive_folder(folder_name)
+                        
+                        all_files = []
+                        for f in st.session_state.temp_flights: 
+                            all_files.extend(f['files'])
+                        
+                        drive_links = []
+                        if all_files:
+                            # Завантаження в підпапку архіву
+                            drive_links = upload_to_drive(all_files, folder_name)
                         
                         final_rows = []
-                        for flight in st.session_state.temp_flights:
-                            # 2. Завантажуємо фото конкретного вильоту
-                            links = []
-                            if flight["file_objs"]:
-                                links = upload_files_to_drive(flight["file_objs"], folder_id)
-                            
-                            # Формуємо фінальний рядок для Таблиці
-                            row = flight.copy()
-                            del row["file_objs"] # прибираємо об'єкти файлів перед записом
-                            row["Посилання на фото"] = "\n".join(links) if links else "Немає"
+                        for f in st.session_state.temp_flights:
+                            row = f.copy()
+                            del row['files']
+                            row["Посилання на фото"] = "\n".join(drive_links) if drive_links else "Немає"
                             final_rows.append(row)
                         
-                        # 3. Запис у Таблицю
+                        # Запис у Таблицю
                         old_df = load_data()
                         updated_df = pd.concat([old_df, pd.DataFrame(final_rows)], ignore_index=True)
                         conn.update(worksheet="Sheet1", data=updated_df)
                         
-                        st.success(f"Готово! Створено папку на Диску, фото завантажено, дані в таблиці.")
+                        st.success("Дані та фото збережено в архів! Доступ відкрито.")
                         st.session_state.temp_flights = []
                         st.rerun()
 
-        # Блоки Аналітики та Звітності (як у попередньому коді)
+        with tab2:
+            st.header("Звітність")
+            r_date = st.date_input("Оберіть дату")
+            df = load_data()
+            if not df.empty:
+                filt = df[(df['Дата'] == r_date.strftime("%d.%m.%Y")) & (df['Підрозділ'] == st.session_state.user['unit'])]
+                if not filt.empty:
+                    buf = generate_docx(filt, "Донесення_УПЗ.docx")
+                    if buf: 
+                        st.download_button("📥 Завантажити DOCX", buf, f"Report_{r_date.strftime('%d.%m.%Y')}.docx")
+                else: 
+                    st.warning("Даних немає.")
+
         with tab3:
             st.header("📊 Статистика")
             df = load_data()
             if not df.empty:
-                u_df = df[df['Підрозділ'] == st.session_state.user['unit']]
-                st.plotly_chart(px.bar(u_df, x='Дата', y='Тривалість (хв)', color='Дрон'))
+                u_df = df[df['Підрозділ'] == st.session_state.user['unit']].copy()
+                if not u_df.empty:
+                    u_df['Тривалість (хв)'] = pd.to_numeric(u_df['Тривалість (хв)'])
+                    st.plotly_chart(px.bar(u_df.groupby('Дата')['Тривалість (хв)'].sum().reset_index(), x='Дата', y='Тривалість (хв)', title="Наліт (хв)"))
+    
+    else:
+        st.title("🛰️ Адмін-панель")
+        df_all = load_data()
+        if not df_all.empty:
+            st.dataframe(df_all, use_container_width=True)
+            csv = df_all.to_csv(index=False).encode('utf-8-sig')
+            st.download_button("📥 Експорт бази CSV", csv, "base_export.csv")
