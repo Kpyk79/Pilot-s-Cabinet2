@@ -8,9 +8,9 @@ import requests
 from datetime import datetime, time
 
 # --- 1. КОНФІГУРАЦІЯ ТА СЕКРЕТИ ---
-st.set_page_config(page_title="UAV Pilot Cabinet v2.5", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="UAV Pilot Cabinet v3.1", layout="wide", page_icon="🛡️")
 
-# Зчитування токенів Telegram
+# Зчитування секретів Telegram
 TG_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN") or st.secrets.get("connections", {}).get("gsheets", {}).get("TELEGRAM_BOT_TOKEN")
 TG_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID") or st.secrets.get("connections", {}).get("gsheets", {}).get("TELEGRAM_CHAT_ID")
 
@@ -28,7 +28,6 @@ DRONES = ["DJI Mavic 3 Pro", "DJI Mavic 3E", "DJI Mavic 3T", "DJI Matrice 30T", 
 ADMIN_PASSWORD = "admin_secret"
 
 def send_to_telegram_photo(file_obj, caption):
-    """Надсилає фото з підписом"""
     if not TG_TOKEN or not TG_CHAT_ID: return "❌ Помилка токена"
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto"
     try:
@@ -39,7 +38,6 @@ def send_to_telegram_photo(file_obj, caption):
     except Exception as e: return f"❌ Зв'язок: {str(e)}"
 
 def send_to_telegram_text(text):
-    """Надсилає лише текст"""
     if not TG_TOKEN or not TG_CHAT_ID: return "❌ Помилка токена"
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
     try:
@@ -84,7 +82,7 @@ def generate_docx(df_filtered, template_path):
         return buf
     except: return None
 
-# --- 3. ЛОГІКА СЕСІЇ ---
+# --- 3. СТАН СЕСІЇ ---
 if 'temp_flights' not in st.session_state: st.session_state.temp_flights = []
 if 'logged_in' not in st.session_state: st.session_state.logged_in = False
 
@@ -124,7 +122,7 @@ else:
                 m_date = c1.date_input("Дата завдання", datetime.now())
                 m_start = c2.time_input("Початок зміни", value=time(8,0))
                 m_end = c3.time_input("Кінець зміни", value=time(20,0))
-                m_route = c4.text_input("Напрямок/Маршрут")
+                m_route = c4.text_input("Напрямок/Маршрут", placeholder="Вкажіть район роботи")
 
             st.write("---")
             with st.expander("📝 Додати новий виліт", expanded=True):
@@ -136,12 +134,12 @@ else:
                 f_dist = col4.number_input("Дистанція (м)", min_value=0, step=10)
                 f_res = st.selectbox("Результат", ["Без ознак порушення", "Затримання", "Виявлення цілі"])
                 f_note = st.text_area("Примітки")
-                f_imgs = st.file_uploader("📸 Скріншоти", accept_multiple_files=True)
+                f_imgs = st.file_uploader("📸 Скріншоти вильоту", accept_multiple_files=True)
 
                 if st.button("➕ Додати у список"):
                     st.session_state.temp_flights.append({
                         "Дата": m_date.strftime("%d.%m.%Y"),
-                        "Час завдання": f"{m_start.strftime('%H:%M')}-{m_end.strftime('%H:%M')}",
+                        "Час завдання": f"{m_start.strftime('%H:%M')} - {m_end.strftime('%H:%M')}",
                         "Підрозділ": st.session_state.user['unit'],
                         "Оператор": st.session_state.user['name'],
                         "Дрон": st.session_state.user['drone'],
@@ -159,45 +157,61 @@ else:
             if st.session_state.temp_flights:
                 st.write("---")
                 st.subheader("📋 Вильоти у черзі")
-                st.dataframe(pd.DataFrame(st.session_state.temp_flights)[["Взльот", "Посадка", "Результат"]], use_container_width=True)
+                
+                # ВІДОБРАЖЕННЯ ТАБЛИЦІ З ОНОВЛЕНИМИ СТОВПЦЯМИ
+                temp_df_display = pd.DataFrame(st.session_state.temp_flights)[["Взльот", "Посадка", "Тривалість (хв)", "Дистанція (м)"]]
+                temp_df_display.columns = ["Зліт", "Посадка", "Тривалість", "Дистанція"]
+                st.dataframe(temp_df_display, use_container_width=True)
                 
                 if st.button("🚀 ВІДПРАВИТИ ВСІ ДАНІ (Sheets + TG)"):
-                    with st.spinner("Передача даних..."):
+                    with st.spinner("Формування зведеного звіту та передача даних..."):
+                        all_flights = st.session_state.temp_flights
+                        first_fl = all_flights[0]
+                        
+                        flights_list_str = ""
+                        total_duration = 0
+                        for i, fl in enumerate(all_flights, 1):
+                            flights_list_str += f"{i}. {fl['Взльот']} - {fl['Посадка']} ({fl['Тривалість (хв)']} хв)\n"
+                            total_duration += fl['Тривалість (хв)']
+
+                        report_text = (
+                            f"🚁 **Донесення: {first_fl['Підрозділ']}**\n"
+                            f"━━━━━━━━━━━━━━━\n"
+                            f"👤 **Пілот:** {first_fl['Оператор']}\n"
+                            f"📅 **Дата:** {first_fl['Дата']}\n"
+                            f"⏱ **Час завд.:** {first_fl['Час завдання']}\n"
+                            f"📍 **Маршрут:** {first_fl['Маршрут']}\n"
+                            f"🛡 **БпЛА:** {first_fl['Дрон']}\n"
+                            f"━━━━━━━━━━━━━━━\n"
+                            f"🚀 **Список вильотів:**\n{flights_list_str}"
+                            f"⏱ **Загальний наліт:** {total_duration} хв\n"
+                            f"━━━━━━━━━━━━━━━\n"
+                            f"🎯 **Результат:** {first_fl['Результат']}\n"
+                            f"📝 **Примітки:** {first_fl['Примітки']}"
+                        )
+
                         final_rows = []
-                        for fl in st.session_state.temp_flights:
-                            # Шаблон звіту для Telegram
-                            report_text = (
-                                f"🚁 **Донесення: {fl['Підрозділ']}**\n"
-                                f"━━━━━━━━━━━━━━━\n"
-                                f"👤 **Пілот:** {fl['Оператор']}\n"
-                                f"📅 **Дата:** {fl['Дата']}\n"
-                                f"🕒 **Час:** {fl['Взльот']} - {fl['Посадка']} ({fl['Тривалість (хв)']} хв)\n"
-                                f"🗺️ **Маршрут:** {fl['Маршрут']}\n"
-                                f"📏 **Дистанція:** {fl['Дистанція (м)']} м\n"
-                                f"🛡️ **БпЛА:** {fl['Дрон']}\n"
-                                f"🎯 **Результат:** {fl['Результат']}\n"
-                                f"📝 **Примітки:** {fl['Примітки']}\n"
-                                f"━━━━━━━━━━━━━━━"
-                            )
-                            
+                        all_media_sent = False
+                        for fl in all_flights:
                             media_log = []
                             if fl['files']:
                                 for img in fl['files']:
                                     status = send_to_telegram_photo(img, report_text)
                                     media_log.append(status)
-                            else:
-                                status = send_to_telegram_text(report_text)
-                                media_log.append(status)
-
+                                all_media_sent = True
+                            
                             row = fl.copy(); del row['files']
-                            row["Медіа (статус)"] = "\n".join(media_log)
+                            row["Медіа (статус)"] = "Надіслано з фото" if fl['files'] else "Текстовий звіт"
                             final_rows.append(row)
-                        
+
+                        if not all_media_sent:
+                            send_to_telegram_text(report_text)
+
                         old_df = load_data()
                         updated_df = pd.concat([old_df, pd.DataFrame(final_rows)], ignore_index=True)
                         conn.update(worksheet="Sheet1", data=updated_df)
                         
-                        st.success(f"Дані збережено! Польотів: {len(final_rows)}")
+                        st.success(f"Дані зафіксовано! Оброблено польотів: {len(final_rows)}")
                         st.session_state.temp_flights = []
                         st.rerun()
 
@@ -219,7 +233,7 @@ else:
                 u_df = df_full[df_full['Підрозділ'] == st.session_state.user['unit']].copy()
                 if not u_df.empty:
                     u_df['Тривалість (хв)'] = pd.to_numeric(u_df['Тривалість (хв)'], errors='coerce')
-                    st.plotly_chart(px.bar(u_df, x='Дата', y='Тривалість (хв)', color='Результат', title="Ваш наліт"), use_container_width=True)
+                    st.plotly_chart(px.bar(u_df, x='Дата', y='Тривалість (хв)', color='Результат', title="Ваша активність"), use_container_width=True)
     else:
         st.title("🛰️ Адмін-панель")
         all_data = load_data()
