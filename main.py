@@ -7,9 +7,10 @@ import io
 import requests
 from datetime import datetime, time
 
-# --- 1. КОНФІГУРАЦІЯ ТА ДІАГНОСТИКА СЕКРЕТІВ ---
-st.set_page_config(page_title="UAV Pilot Cabinet v2.1", layout="wide", page_icon="🛡️")
+# --- 1. КОНФІГУРАЦІЯ ТА СЕКРЕТИ ---
+st.set_page_config(page_title="UAV Pilot Cabinet v2.5", layout="wide", page_icon="🛡️")
 
+# Зчитування токенів Telegram
 TG_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN") or st.secrets.get("connections", {}).get("gsheets", {}).get("TELEGRAM_BOT_TOKEN")
 TG_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID") or st.secrets.get("connections", {}).get("gsheets", {}).get("TELEGRAM_CHAT_ID")
 
@@ -26,20 +27,26 @@ UNITS = ["впс Кодима", "віпс Шершенці", "віпс Загн�
 DRONES = ["DJI Mavic 3 Pro", "DJI Mavic 3E", "DJI Mavic 3T", "DJI Matrice 30T", "DJI Matrice 300", "Autel Evo Max 4T", "Skydio X2D", "Puma LE"]
 ADMIN_PASSWORD = "admin_secret"
 
-def send_to_telegram(file_obj, caption):
-    if not TG_TOKEN or not TG_CHAT_ID:
-        return "❌ Помилка: Ключі TG не налаштовані"
+def send_to_telegram_photo(file_obj, caption):
+    """Надсилає фото з підписом"""
+    if not TG_TOKEN or not TG_CHAT_ID: return "❌ Помилка токена"
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto"
     try:
         files = {'photo': (file_obj.name, file_obj.getvalue(), file_obj.type)}
-        data = {'chat_id': str(TG_CHAT_ID), 'caption': caption}
+        data = {'chat_id': str(TG_CHAT_ID), 'caption': caption, 'parse_mode': 'Markdown'}
         response = requests.post(url, files=files, data=data, timeout=20)
-        res = response.json()
-        if res.get("ok"):
-            return f"✅ Фото: {file_obj.name}"
-        return f"❌ TG API: {res.get('description')}"
-    except Exception as e:
-        return f"❌ Зв'язок: {str(e)}"
+        return "✅ Фото надіслано" if response.json().get("ok") else f"❌ Помилка: {response.json().get('description')}"
+    except Exception as e: return f"❌ Зв'язок: {str(e)}"
+
+def send_to_telegram_text(text):
+    """Надсилає лише текст"""
+    if not TG_TOKEN or not TG_CHAT_ID: return "❌ Помилка токена"
+    url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
+    try:
+        data = {'chat_id': str(TG_CHAT_ID), 'text': text, 'parse_mode': 'Markdown'}
+        response = requests.post(url, data=data, timeout=15)
+        return "✅ Текст надіслано" if response.json().get("ok") else f"❌ Помилка: {response.json().get('description')}"
+    except Exception as e: return f"❌ Зв'язок: {str(e)}"
 
 conn = st.connection("gsheets", type=GSheetsConnection)
 
@@ -77,11 +84,11 @@ def generate_docx(df_filtered, template_path):
         return buf
     except: return None
 
-# --- 3. СТАН СЕСІЇ ---
+# --- 3. ЛОГІКА СЕСІЇ ---
 if 'temp_flights' not in st.session_state: st.session_state.temp_flights = []
 if 'logged_in' not in st.session_state: st.session_state.logged_in = False
 
-# --- 4. АВТОРИЗАЦІЯ ---
+# --- 4. ІНТЕРФЕЙС ---
 if not st.session_state.logged_in:
     st.title("🛡️ Вхід у систему БпЛА")
     role_choice = st.radio("Режим:", ["Пілот", "Адміністратор"], horizontal=True)
@@ -129,7 +136,7 @@ else:
                 f_dist = col4.number_input("Дистанція (м)", min_value=0, step=10)
                 f_res = st.selectbox("Результат", ["Без ознак порушення", "Затримання", "Виявлення цілі"])
                 f_note = st.text_area("Примітки")
-                f_imgs = st.file_uploader("📸 Скріншоти (TG)", accept_multiple_files=True)
+                f_imgs = st.file_uploader("📸 Скріншоти", accept_multiple_files=True)
 
                 if st.button("➕ Додати у список"):
                     st.session_state.temp_flights.append({
@@ -155,33 +162,39 @@ else:
                 st.dataframe(pd.DataFrame(st.session_state.temp_flights)[["Взльот", "Посадка", "Результат"]], use_container_width=True)
                 
                 if st.button("🚀 ВІДПРАВИТИ ВСІ ДАНІ (Sheets + TG)"):
-                    with st.spinner("Передача медіа та оновлення бази..."):
+                    with st.spinner("Передача даних..."):
                         final_rows = []
                         for fl in st.session_state.temp_flights:
+                            # Шаблон звіту для Telegram
+                            report_text = (
+                                f"🚁 **Донесення: {fl['Підрозділ']}**\n"
+                                f"━━━━━━━━━━━━━━━\n"
+                                f"👤 **Пілот:** {fl['Оператор']}\n"
+                                f"📅 **Дата:** {fl['Дата']}\n"
+                                f"🕒 **Час:** {fl['Взльот']} - {fl['Посадка']} ({fl['Тривалість (хв)']} хв)\n"
+                                f"🗺️ **Маршрут:** {fl['Маршрут']}\n"
+                                f"📏 **Дистанція:** {fl['Дистанція (м)']} м\n"
+                                f"🛡️ **БпЛА:** {fl['Дрон']}\n"
+                                f"🎯 **Результат:** {fl['Результат']}\n"
+                                f"📝 **Примітки:** {fl['Примітки']}\n"
+                                f"━━━━━━━━━━━━━━━"
+                            )
+                            
                             media_log = []
-                            for img in fl['files']:
-                                caption = (
-    f"🚁 Донесення: {fl['Підрозділ']}\n"
-    f"━━━━━━━━━━━━━━━\n"
-    f"👤 Пілот: {fl['Оператор']}\n"
-    f"📅 Дата: {fl['Дата']}\n"
-    f"🕒 Час: {fl['Взльот']} - {fl['Посадка']} ({fl['Тривалість (хв)']} хв)\n"
-    f"🗺️ Маршрут: {fl['Маршрут']}\n"
-    f"📏 Дистанція: {fl['Дистанція (м)']} м\n"
-    f"🛡️ БпЛА: {fl['Дрон']}\n"
-    f"🎯 Результат: {fl['Результат']}\n"
-    f"📝 Примітки: {fl['Примітки']}\n"
-    f"━━━━━━━━━━━━━━━\n"
-)
-                                status = send_to_telegram(img, caption)
+                            if fl['files']:
+                                for img in fl['files']:
+                                    status = send_to_telegram_photo(img, report_text)
+                                    media_log.append(status)
+                            else:
+                                status = send_to_telegram_text(report_text)
                                 media_log.append(status)
+
                             row = fl.copy(); del row['files']
-                            row["Медіа (статус)"] = "\n".join(media_log) if media_log else "Без медіа"
+                            row["Медіа (статус)"] = "\n".join(media_log)
                             final_rows.append(row)
                         
                         old_df = load_data()
                         updated_df = pd.concat([old_df, pd.DataFrame(final_rows)], ignore_index=True)
-                        # ТУТ ПРАВИЛЬНИЙ ЗАКРИТИЙ ВИКЛИК
                         conn.update(worksheet="Sheet1", data=updated_df)
                         
                         st.success(f"Дані збережено! Польотів: {len(final_rows)}")
@@ -195,7 +208,6 @@ else:
             if not df_full.empty:
                 filt = df_full[(df_full['Дата'] == r_date.strftime("%d.%m.%Y")) & (df_full['Підрозділ'] == st.session_state.user['unit'])]
                 if not filt.empty:
-                    st.success(f"Знайдено польотів: {len(filt)}")
                     buf = generate_docx(filt, "Донесення_УПЗ.docx")
                     if buf: st.download_button("📥 Скачати DOCX", buf, f"Report_{r_date.strftime('%d.%m.%Y')}.docx")
                 else: st.warning("Немає записів за цю дату.")
