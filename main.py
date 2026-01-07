@@ -4,7 +4,7 @@ import pandas as pd
 import plotly.express as px
 from docx import Document
 import io
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 
 # --- НАЛАШТУВАННЯ ---
 st.set_page_config(page_title="Кабінет пілота БпЛА", layout="wide", page_icon="🛡️")
@@ -14,7 +14,7 @@ st.markdown("""
     <style>
     .main { background-color: #f8f9fa; }
     .stButton>button { width: 100%; border-radius: 8px; background-color: #2b4231; color: white; height: 3.5em; font-weight: bold; }
-    .flight-card { border: 2px solid #344e41; padding: 20px; border-radius: 15px; background: #ffffff; margin-bottom: 20px; box-shadow: 2px 2px 10px rgba(0,0,0,0.1); }
+    .duration-box { background-color: #e9ecef; padding: 10px; border-radius: 5px; text-align: center; border: 1px solid #ced4da; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -28,6 +28,17 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 # СЕСІЯ ДЛЯ ТИМЧАСОВОГО СПИСКУ
 if 'temp_flights' not in st.session_state:
     st.session_state.temp_flights = []
+
+# --- ФУНКЦІЯ ПІДРАХУНКУ ТРИВАЛОСТІ ---
+def calculate_duration(start, end):
+    # Перетворюємо час у хвилини від початку доби
+    start_mins = start.hour * 60 + start.minute
+    end_mins = end.hour * 60 + end.minute
+    
+    duration = end_mins - start_mins
+    if duration < 0:  # Якщо політ перейшов через північ
+        duration += 1440 # Додаємо 24 години
+    return duration
 
 # --- ВХІД ---
 if 'logged_in' not in st.session_state:
@@ -53,7 +64,6 @@ if not st.session_state.logged_in:
                     st.rerun()
 
 else:
-    # --- НАВІГАЦІЯ ---
     st.sidebar.title("Керування")
     if st.sidebar.button("Вийти з системи"):
         st.session_state.logged_in = False
@@ -63,14 +73,12 @@ else:
     if st.session_state.role == "Pilot":
         tab_add, tab_docx, tab_stats = st.tabs(["🚀 До польотів", "📜 Формування звітів", "📊 Аналітика"])
 
-        # --- ТАБ: ДО ПОЛЬОТІВ ---
         with tab_add:
             st.header("Дані польотного завдання (Зміна)")
             
             with st.container(border=True):
                 c1, c2, c3, c4 = st.columns([1.5, 1, 1, 2])
                 mission_date = c1.date_input("Дата завдання")
-                # Введення ТОЧНОГО часу польотного завдання
                 mission_start = c2.time_input("Початок зміни", value=time(8, 0), step=60)
                 mission_end = c3.time_input("Кінець зміни", value=time(20, 0), step=60)
                 mission_route = c4.text_input("Напрямок (маршрут)", placeholder="напр. впс Кодима - межа")
@@ -78,15 +86,18 @@ else:
             st.write("---")
             st.subheader("📝 Додати окремий виліт")
             
-            # Форма для кожного польоту
             with st.expander("Заповнити деталі нового вильоту", expanded=True):
-                col1, col2, col3 = st.columns(3)
-                # Точний час взльоту та посадки
-                t_takeoff = col1.time_input("Точний час взльоту", value=time(9, 0), step=60)
-                t_landing = col2.time_input("Точний час посадки", value=time(9, 30), step=60)
-                f_dist = col3.number_input("Дистанція (м)", min_value=0, step=10)
+                col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
+                t_takeoff = col1.time_input("Час взльоту", value=time(9, 0), step=60)
+                t_landing = col2.time_input("Час посадки", value=time(9, 30), step=60)
                 
-                f_res = st.selectbox("Результат", ["Без ознак порушення", "Затримання"])
+                # АВТОМАТИЧНИЙ ПІДРАХУНОК
+                flight_duration = calculate_duration(t_takeoff, t_landing)
+                col3.markdown(f"<div class='duration-box'>⏳ Тривалість:<br><b>{flight_duration} хв</b></div>", unsafe_allow_html=True)
+                
+                f_dist = col4.number_input("Дистанція (м)", min_value=0, step=10)
+                
+                res = st.selectbox("Результат", ["Без ознак порушення", "Затримання"])
                 f_notes = st.text_area("Примітки до цього вильоту")
                 f_photos = st.file_uploader("Завантажити фото/скріншоти", accept_multiple_files=True)
                 
@@ -100,40 +111,41 @@ else:
                         "Маршрут": mission_route,
                         "Взльот": t_takeoff.strftime("%H:%M"),
                         "Посадка": t_landing.strftime("%H:%M"),
+                        "Тривалість (хв)": flight_duration,
                         "Дистанція (м)": f_dist,
                         "Результат": f_res,
                         "Примітки": f_notes,
                         "Файлів": len(f_photos) if f_photos else 0
                     }
                     st.session_state.temp_flights.append(flight_data)
-                    st.toast("Виліт зафіксовано!")
+                    st.toast(f"Виліт додано! ({flight_duration} хв)")
 
-            # Перегляд черги відправки
+            # Попередній перегляд перед відправкою
             if st.session_state.temp_flights:
                 st.write("---")
-                st.subheader("Вильоти до відправки в базу")
+                st.subheader("📋 Польоти готові до відправки")
                 preview_df = pd.DataFrame(st.session_state.temp_flights)
-                st.dataframe(preview_df[["Взльот", "Посадка", "Дистанція (м)", "Результат", "Файлів"]], use_container_width=True)
+                st.dataframe(preview_df[["Взльот", "Посадка", "Тривалість (хв)", "Дистанція (м)", "Результат"]], use_container_width=True)
                 
                 b_clear, b_send = st.columns(2)
                 if b_clear.button("🗑️ Очистити все"):
                     st.session_state.temp_flights = []
                     st.rerun()
                 if b_send.button("✅ ВІДПРАВИТИ ВСІ ПОЛЬОТИ В GOOGLE SHEETS"):
-                    # Логіка conn.update тут
-                    st.success(f"Записано {len(st.session_state.temp_flights)} польотів. Дані в таблиці!")
+                    # Логіка відправки даних
+                    st.success(f"Записано {len(st.session_state.temp_flights)} польотів. Сумарний наліт: {preview_df['Тривалість (хв)'].sum()} хв.")
                     st.session_state.temp_flights = []
 
         # --- ТАБИ ЗВІТНІСТЬ ТА АНАЛІТИКА ---
         with tab_docx:
             st.header("Генерація офіційного звіту")
-            # Код для заповнення шаблону DOCX
+            # Логіка DOCX
             
         with tab_stats:
             st.header("Ваш наліт")
-            # Графіки
+            # Графіки Plotly
 
     # --- ПАНЕЛЬ АДМІНА ---
     else:
         st.title("Глобальна аналітика")
-        # Повний перегляд даних, фільтри по підрозділах
+        # Глобальні графіки та фільтри
