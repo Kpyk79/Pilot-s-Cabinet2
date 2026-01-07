@@ -30,26 +30,22 @@ ADMIN_PASSWORD = "admin_secret"
 PARENT_FOLDER_ID = "1mqeXnoFcMpleZP-iuj5HkN_SETv3Zgzh"
 
 # --- ПІДКЛЮЧЕННЯ GOOGLE DRIVE API ---
-def get_drive_service():
-    info = st.secrets["connections"]["gsheets"]
-    credentials = service_account.Credentials.from_service_account_info(info)
-    scoped_credentials = credentials.with_scopes(['https://www.googleapis.com/auth/drive'])
-    return build('drive', 'v3', credentials=scoped_credentials)
-
 def upload_to_drive(files, folder_name):
     service = get_drive_service()
     
-    # 1. Створення підпапки
+    # 1. Створення підпапки в архіві
     folder_metadata = {
         'name': folder_name,
         'mimeType': 'application/vnd.google-apps.folder',
         'parents': [PARENT_FOLDER_ID]
     }
+    
     try:
         folder = service.files().create(body=folder_metadata, fields='id').execute()
         folder_id = folder.get('id')
+        st.info(f"📁 Папку {folder_name} створено. ID: {folder_id}")
     except Exception as e:
-        st.error(f"Помилка створення папки: {e}")
+        st.error(f"❌ Помилка створення папки: {e}")
         return []
     
     # 2. Спроба надати доступ (якщо не вийде — ідемо далі)
@@ -57,26 +53,37 @@ def upload_to_drive(files, folder_name):
         public_permission = {'type': 'anyone', 'role': 'viewer'}
         service.permissions().create(fileId=folder_id, body=public_permission).execute()
     except:
-        pass # Пропускаємо, якщо політика безпеки забороняє публічність
+        st.warning("⚠️ Не вдалося зробити папку публічною (обмеження акаунта).")
     
     links = []
+    # 3. Завантаження файлів
     for uploaded_file in files:
-        file_metadata = {'name': uploaded_file.name, 'parents': [folder_id]}
-        # ЗМІНА ТУТ: resumable=False робить завантаження простішим і надійнішим для фото
-        media = MediaIoBaseUpload(
-            io.BytesIO(uploaded_file.getvalue()), 
-            mimetype=uploaded_file.type, 
-            resumable=False 
-        )
         try:
+            file_metadata = {'name': uploaded_file.name, 'parents': [folder_id]}
+            
+            # Читаємо вміст файлу
+            file_content = uploaded_file.getvalue()
+            if not file_content:
+                st.error(f"❌ Файл {uploaded_file.name} порожній")
+                continue
+
+            media = MediaIoBaseUpload(
+                io.BytesIO(file_content), 
+                mimetype=uploaded_file.type, 
+                resumable=False
+            )
+            
             file = service.files().create(
                 body=file_metadata, 
                 media_body=media, 
                 fields='id, webViewLink'
             ).execute()
+            
             links.append(file.get('webViewLink'))
+            st.success(f"✅ Файл {uploaded_file.name} завантажено")
+            
         except Exception as e:
-            st.warning(f"Не вдалося завантажити файл {uploaded_file.name}: {e}")
+            st.error(f"❌ Помилка завантаження файлу {uploaded_file.name}: {e}")
     
     return links
 
