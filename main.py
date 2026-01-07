@@ -4,17 +4,17 @@ import pandas as pd
 import plotly.express as px
 from docx import Document
 import io
-from datetime import datetime
+from datetime import datetime, time
 
-# --- КОНФІГУРАЦІЯ ---
+# --- НАЛАШТУВАННЯ ---
 st.set_page_config(page_title="Кабінет пілота БпЛА", layout="wide", page_icon="🛡️")
 
-# Мілітарі стиль
+# Стилізація
 st.markdown("""
     <style>
-    .main { background-color: #f5f7f9; }
-    .stButton>button { width: 100%; border-radius: 5px; background-color: #344e41; color: white; height: 3em; }
-    .flight-card { border: 1px solid #e6e9ef; padding: 15px; border-radius: 10px; background: white; margin-bottom: 10px; }
+    .main { background-color: #f8f9fa; }
+    .stButton>button { width: 100%; border-radius: 8px; background-color: #2b4231; color: white; height: 3.5em; font-weight: bold; }
+    .flight-card { border: 2px solid #344e41; padding: 20px; border-radius: 15px; background: #ffffff; margin-bottom: 20px; box-shadow: 2px 2px 10px rgba(0,0,0,0.1); }
     </style>
     """, unsafe_allow_html=True)
 
@@ -25,123 +25,115 @@ ADMIN_PASSWORD = "admin_secret"
 # ПІДКЛЮЧЕННЯ
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-def load_data():
-    return conn.read(ttl="1m")
-
-# СЕСІЯ ДЛЯ ПЕРЕЛІКУ ПОЛЬОТІВ
+# СЕСІЯ ДЛЯ ТИМЧАСОВОГО СПИСКУ
 if 'temp_flights' not in st.session_state:
     st.session_state.temp_flights = []
 
-# --- ЛОГІКА ВХОДУ ---
+# --- ВХІД ---
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
 
 if not st.session_state.logged_in:
-    st.title("🛡️ Кабінет пілота БпЛА")
-    auth_mode = st.radio("Режим:", ["Пілот", "Адміністратор"], horizontal=True)
+    st.title("🛡️ Система логування БпЛА")
+    role = st.radio("Режим входу:", ["Пілот", "Адміністратор"], horizontal=True)
     with st.container(border=True):
-        if auth_mode == "Пілот":
-            u = st.selectbox("Підрозділ:", UNITS)
+        if role == "Пілот":
+            u = st.selectbox("Ваш підрозділ:", UNITS)
             n = st.text_input("Звання та прізвище:")
-            d = st.selectbox("Модель дрона:", DRONES)
-            if st.button("Увійти"):
+            d = st.selectbox("Дрон (основний на зміну):", DRONES)
+            if st.button("Вхід"):
                 if n:
                     st.session_state.logged_in, st.session_state.role, st.session_state.user_data = True, "Pilot", {"unit": u, "name": n, "drone": d}
                     st.rerun()
         else:
-            p = st.text_input("Пароль:", type="password")
-            if st.button("Увійти"):
+            p = st.text_input("Пароль адміна:", type="password")
+            if st.button("Вхід як Адмін"):
                 if p == ADMIN_PASSWORD:
                     st.session_state.logged_in, st.session_state.role = True, "Admin"
                     st.rerun()
 
 else:
-    # --- САЙДБАР ---
-    st.sidebar.title("Навігація")
+    # --- НАВІГАЦІЯ ---
+    st.sidebar.title("Керування")
     if st.sidebar.button("Вийти з системи"):
         st.session_state.logged_in = False
         st.session_state.temp_flights = []
         st.rerun()
 
     if st.session_state.role == "Pilot":
-        tab_fly, tab_rep, tab_stat = st.tabs(["🚀 До польотів", "📜 Звітність", "📊 Аналітика"])
+        tab_add, tab_docx, tab_stats = st.tabs(["🚀 До польотів", "📜 Формування звітів", "📊 Аналітика"])
 
-        # --- ВКЛАДКА: ДО ПОЛЬОТІВ ---
-        with tab_fly:
-            st.header("Внесення даних зміни")
+        # --- ТАБ: ДО ПОЛЬОТІВ ---
+        with tab_add:
+            st.header("Дані польотного завдання (Зміна)")
             
-            # 1. Загальні дані зміни
             with st.container(border=True):
-                c1, c2, c3 = st.columns(3)
-                f_date = c1.date_input("Дата завдання")
-                f_task_time = c2.text_input("Час польотного завдання (напр. 08:00-20:00)")
-                f_route = c3.text_input("Напрямок (маршрут)")
+                c1, c2, c3, c4 = st.columns([1.5, 1, 1, 2])
+                mission_date = c1.date_input("Дата завдання")
+                # Введення ТОЧНОГО часу польотного завдання
+                mission_start = c2.time_input("Початок зміни", value=time(8, 0), step=60)
+                mission_end = c3.time_input("Кінець зміни", value=time(20, 0), step=60)
+                mission_route = c4.text_input("Напрямок (маршрут)", placeholder="напр. впс Кодима - межа")
 
             st.write("---")
-
-            # 2. Форма додавання окремих польотів
-            st.subheader("Додати політ у список")
-            with st.expander("Заповнити дані вильоту", expanded=True):
+            st.subheader("📝 Додати окремий виліт")
+            
+            # Форма для кожного польоту
+            with st.expander("Заповнити деталі нового вильоту", expanded=True):
                 col1, col2, col3 = st.columns(3)
-                t_start = col1.time_input("Час взльоту")
-                t_end = col2.time_input("Час посадки")
-                dist = col3.number_input("Дистанція (м)", min_value=0)
+                # Точний час взльоту та посадки
+                t_takeoff = col1.time_input("Точний час взльоту", value=time(9, 0), step=60)
+                t_landing = col2.time_input("Точний час посадки", value=time(9, 30), step=60)
+                f_dist = col3.number_input("Дистанція (м)", min_value=0, step=10)
                 
-                res = st.selectbox("Результат розвідки", ["Без ознак порушення", "Затримання"])
-                notes = st.text_input("Коментар / Примітки")
+                f_res = st.selectbox("Результат", ["Без ознак порушення", "Затримання"])
+                f_notes = st.text_area("Примітки до цього вильоту")
+                f_photos = st.file_uploader("Завантажити фото/скріншоти", accept_multiple_files=True)
                 
-                # Поле для фото
-                uploaded_files = st.file_uploader("Додати скріншоти та фото", accept_multiple_files=True, type=['png', 'jpg', 'jpeg'])
-                
-                if st.button("➕ Додати цей політ у список"):
-                    # Зберігаємо дані (назви файлів для логу)
-                    file_names = [f.name for f in uploaded_files] if uploaded_files else []
-                    
-                    flight_entry = {
-                        "Дата": str(f_date),
-                        "Час завдання": f_task_time,
+                if st.button("➕ Додати політ у список"):
+                    flight_data = {
+                        "Дата": str(mission_date),
+                        "Час завдання": f"{mission_start.strftime('%H:%M')} - {mission_end.strftime('%H:%M')}",
                         "Підрозділ": st.session_state.user_data['unit'],
                         "Оператор": st.session_state.user_data['name'],
-                        "Модель БпЛА": st.session_state.user_data['drone'],
-                        "Маршрут": f_route,
-                        "Час зльоту": t_start.strftime("%H:%M"),
-                        "Час посадки": t_end.strftime("%H:%M"),
-                        "Дистанція": dist,
-                        "Результат": res,
-                        "Примітки": notes,
-                        "Фото": ", ".join(file_names) if file_names else "Немає"
+                        "Дрон": st.session_state.user_data['drone'],
+                        "Маршрут": mission_route,
+                        "Взльот": t_takeoff.strftime("%H:%M"),
+                        "Посадка": t_landing.strftime("%H:%M"),
+                        "Дистанція (м)": f_dist,
+                        "Результат": f_res,
+                        "Примітки": f_notes,
+                        "Файлів": len(f_photos) if f_photos else 0
                     }
-                    st.session_state.temp_flights.append(flight_entry)
-                    st.toast("Політ додано!")
+                    st.session_state.temp_flights.append(flight_data)
+                    st.toast("Виліт зафіксовано!")
 
-            # 3. Список доданих польотів
+            # Перегляд черги відправки
             if st.session_state.temp_flights:
                 st.write("---")
-                st.subheader("Польоти готові до відправки:")
-                temp_df = pd.DataFrame(st.session_state.temp_flights)
-                st.dataframe(temp_df[["Час зльоту", "Час посадки", "Дистанція", "Результат", "Фото"]], use_container_width=True)
+                st.subheader("Вильоти до відправки в базу")
+                preview_df = pd.DataFrame(st.session_state.temp_flights)
+                st.dataframe(preview_df[["Взльот", "Посадка", "Дистанція (м)", "Результат", "Файлів"]], use_container_width=True)
                 
-                b1, b2 = st.columns(2)
-                if b1.button("🗑️ Очистити весь список"):
+                b_clear, b_send = st.columns(2)
+                if b_clear.button("🗑️ Очистити все"):
                     st.session_state.temp_flights = []
                     st.rerun()
-                
-                if b2.button("✅ ВІДПРАВИТИ ВСІ ДАНІ В ТАБЛИЦЮ"):
-                    # Логіка відправки (conn.update)
-                    st.success(f"Дані про {len(st.session_state.temp_flights)} польотів успішно збережені!")
-                    st.session_state.temp_flights = [] # Очищення після успіху
+                if b_send.button("✅ ВІДПРАВИТИ ВСІ ПОЛЬОТИ В GOOGLE SHEETS"):
+                    # Логіка conn.update тут
+                    st.success(f"Записано {len(st.session_state.temp_flights)} польотів. Дані в таблиці!")
+                    st.session_state.temp_flights = []
 
-        # --- ВКЛАДКИ ЗВІТНІСТЬ ТА АНАЛІТИКА (аналогічно попередньому коду) ---
-        with tab_rep:
-            st.header("Формування звіту")
-            st.write("Виберіть дату для генерації документа.")
-            # Тут код для generate_report
+        # --- ТАБИ ЗВІТНІСТЬ ТА АНАЛІТИКА ---
+        with tab_docx:
+            st.header("Генерація офіційного звіту")
+            # Код для заповнення шаблону DOCX
+            
+        with tab_stats:
+            st.header("Ваш наліт")
+            # Графіки
 
-        with tab_stat:
-            st.header("Статистика підрозділу")
-            # Тут графіки Plotly
-
-    # --- ПАНЕЛЬ АДМІНІСТРАТОРА ---
+    # --- ПАНЕЛЬ АДМІНА ---
     else:
         st.title("Глобальна аналітика")
-        # Тут код для адміністратора (фільтри, графіки, перегляд всієї бази)
+        # Повний перегляд даних, фільтри по підрозділах
