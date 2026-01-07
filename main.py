@@ -5,12 +5,12 @@ import plotly.express as px
 from docx import Document
 import io
 import requests
+import os
 from datetime import datetime, time
 
 # --- 1. КОНФІГУРАЦІЯ ТА СЕКРЕТИ ---
-st.set_page_config(page_title="UAV Pilot Cabinet v3.6", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="UAV Pilot Cabinet v3.7", layout="wide", page_icon="🛡️")
 
-# Функція для отримання секретів (корінь або gsheets)
 def get_secret(key):
     val = st.secrets.get(key)
     if val: return val
@@ -27,7 +27,6 @@ UNITS = ["впс Кодима", "віпс Шершенці", "віпс Загн�
 DRONES = ["DJI Mavic 3 Pro", "DJI Mavic 3E", "DJI Mavic 3T", "DJI Matrice 30T", "DJI Matrice 300", "Autel Evo Max 4T", "Skydio X2D", "Puma LE"]
 ADMIN_PASSWORD = "admin_secret"
 
-# Стилізація
 st.markdown("""
     <style>
     .main { background-color: #f8f9fa; }
@@ -38,23 +37,23 @@ st.markdown("""
 
 # --- 3. СЕРВІСИ ТЕЛЕГРАМ ---
 def send_telegram_text(text):
-    if not TG_TOKEN or not TG_CHAT_ID: return "❌ Ключі не налаштовані"
+    if not TG_TOKEN or not TG_CHAT_ID: return "❌ Помилка налаштувань"
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
     try:
         r = requests.post(url, data={'chat_id': str(TG_CHAT_ID), 'text': text, 'parse_mode': 'Markdown'}, timeout=30)
         return "✅ Успішно" if r.json().get("ok") else f"❌ {r.json().get('description')}"
-    except: return "❌ Помилка зв'язку (Timeout)"
+    except: return "❌ Помилка зв'язку"
 
 def send_telegram_photo(file_obj, caption):
-    if not TG_TOKEN or not TG_CHAT_ID: return "❌ Ключі не налаштовані"
+    if not TG_TOKEN or not TG_CHAT_ID: return "❌ Помилка налаштувань"
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto"
     try:
         files = {'photo': (file_obj.name, file_obj.getvalue(), file_obj.type)}
         r = requests.post(url, files=files, data={'chat_id': str(TG_CHAT_ID), 'caption': caption, 'parse_mode': 'Markdown'}, timeout=60)
         return "✅ Фото надіслано" if r.json().get("ok") else f"❌ {r.json().get('description')}"
-    except: return "❌ Помилка зв'язку (Timeout)"
+    except: return "❌ Помилка зв'язку"
 
-# --- 4. ДАНІ ТА СЕСІЯ ---
+# --- 4. РОБОТА З ДОКУМЕНТАМИ ТА ДАНИМИ ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def load_data():
@@ -64,30 +63,70 @@ def load_data():
     except:
         return pd.DataFrame(columns=["Дата", "Час завдання", "Підрозділ", "Оператор", "Дрон", "Маршрут", "Взльот", "Посадка", "Тривалість (хв)", "Дистанція (м)", "Результат", "Примітки", "Медіа (статус)"])
 
+def generate_docx(df_filtered, template_path):
+    if not os.path.exists(template_path):
+        return "ERROR_FILE_MISSING"
+    try:
+        doc = Document(template_path)
+        # Агрегуємо польоти для звіту
+        flights_summary = ""
+        for (pilot, drone), group in df_filtered.groupby(['Оператор', 'Дрон']):
+            details = ", ".join([f"{r['Взльот']}-{r['Посадка']} ({r['Дистанція (м)']}м)" for _, r in group.iterrows()])
+            flights_summary += f"{pilot} — {len(group)} польотів, {drone} ({details});\n"
+
+        replacements = {
+            "{{DATE}}": str(df_filtered['Дата'].iloc[0]),
+            "{{UNIT}}": str(df_filtered['Підрозділ'].iloc[0]),
+            "{{FLIGHTS_LIST}}": flights_summary,
+            "{{ROUTE}}": str(df_filtered['Маршрут'].iloc[0]),
+            "{{RESULTS}}": f"{df_filtered['Результат'].iloc[0]}. {df_filtered['Примітки'].iloc[0]}"
+        }
+
+        for paragraph in doc.paragraphs:
+            for key, value in replacements.items():
+                if key in paragraph.text:
+                    paragraph.text = paragraph.text.replace(key, value)
+        
+        # Перевірка таблиць у документі (якщо вони є)
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    for key, value in replacements.items():
+                        if key in cell.text:
+                            cell.text = cell.text.replace(key, value)
+
+        buf = io.BytesIO()
+        doc.save(buf)
+        buf.seek(0)
+        return buf
+    except Exception as e:
+        st.error(f"Помилка генерації DOCX: {e}")
+        return None
+
 def calculate_duration(start, end):
     s, e = start.hour * 60 + start.minute, end.hour * 60 + end.minute
     d = e - s
     return d if d >= 0 else d + 1440
 
+# --- 5. ЛОГІКА СЕСІЇ ---
 if 'temp_flights' not in st.session_state: st.session_state.temp_flights = []
 if 'logged_in' not in st.session_state: st.session_state.logged_in = False
 
-# --- 5. ІНТЕРФЕЙС ---
+# --- 6. ІНТЕРФЕЙС ---
 if not st.session_state.logged_in:
-    st.title("🛡️ Вхід у систему БпЛА")
-    role_choice = st.radio("Оберіть роль:", ["Пілот", "Адміністратор"], horizontal=True)
+    st.title("🛡️ Кабінет пілота БпЛА")
+    role = st.radio("Режим:", ["Пілот", "Адміністратор"], horizontal=True)
     with st.container(border=True):
-        if role_choice == "Пілот":
-            u_select = st.selectbox("Підрозділ:", UNITS)
-            n_input = st.text_input("Звання та прізвище:")
-            d_select = st.selectbox("Дрон на зміну:", DRONES)
-            if st.button("Увійти"):
-                if n_input:
-                    st.session_state.logged_in, st.session_state.role, st.session_state.user = True, "Pilot", {"unit": u_select, "name": n_input, "drone": d_select}
-                    st.rerun()
+        if role == "Пілот":
+            u = st.selectbox("Підрозділ:", UNITS)
+            n = st.text_input("Звання та прізвище:")
+            d = st.selectbox("Дрон на зміну:", DRONES)
+            if st.button("Увійти") and n:
+                st.session_state.logged_in, st.session_state.role, st.session_state.user = True, "Pilot", {"unit": u, "name": n, "drone": d}
+                st.rerun()
         else:
-            p_input = st.text_input("Пароль:", type="password")
-            if st.button("Вхід") and p_input == ADMIN_PASSWORD:
+            p = st.text_input("Пароль:", type="password")
+            if st.button("Вхід") and p == ADMIN_PASSWORD:
                 st.session_state.logged_in, st.session_state.role = True, "Admin"
                 st.rerun()
 else:
@@ -96,27 +135,26 @@ else:
         st.sidebar.info(send_telegram_text("🔔 Тест зв'язку: ОК"))
     if st.sidebar.button("Вийти"):
         st.session_state.logged_in = False
-        st.session_state.temp_flights = []
         st.rerun()
 
     if st.session_state.role == "Pilot":
         tab1, tab2, tab3 = st.tabs(["🚀 Польоти", "📜 Донесення", "📊 Аналітика"])
 
         with tab1:
-            st.header("Внесення польотних даних")
+            st.header("Внесення даних")
             with st.container(border=True):
-                c1, c2, c3, c4 = st.columns([1.5, 1, 1, 2])
+                c1, c2, c3, c4 = st.columns(4)
                 m_date = c1.date_input("Дата завдання", datetime.now())
-                m_start = c2.time_input("Початок зміни", value=time(8,0))
-                m_end = c3.time_input("Кінець зміни", value=time(20,0))
-                m_route = c4.text_input("Напрямок/Маршрут", placeholder="Вкажіть район")
+                m_start = c2.time_input("Зміна з", value=time(8,0))
+                m_end = c3.time_input("Зміна до", value=time(20,0))
+                m_route = c4.text_input("Маршрут")
 
-            with st.expander("📝 Додати новий виліт", expanded=True):
+            with st.expander("📝 Додати політ", expanded=True):
                 col1, col2, col3, col4 = st.columns(4)
                 t_off = col1.time_input("Взльот", value=time(9,0))
                 t_land = col2.time_input("Посадка", value=time(9,30))
                 f_dur = calculate_duration(t_off, t_land)
-                col3.markdown(f"<div class='duration-box'>⏳ <b>{f_dur} хв</b></div>", unsafe_allow_html=True)
+                col3.info(f"⏳ {f_dur} хв")
                 f_dist = col4.number_input("Дистанція (м)", min_value=0)
                 f_res = st.selectbox("Результат", ["Без ознак порушення", "Затримання", "Виявлення цілі"])
                 f_note = st.text_area("Примітки")
@@ -147,7 +185,7 @@ else:
                 st.dataframe(df_view, use_container_width=True)
                 
                 if st.button("🚀 ВІДПРАВИТИ ВСІ ДАНІ"):
-                    with st.spinner("Формування звіту та відправка..."):
+                    with st.spinner("Відправка..."):
                         all_fl = st.session_state.temp_flights
                         first = all_fl[0]
                         flights_list = "\n".join([f"{i+1}. {f['Взльот']}-{f['Посадка']} ({f['Тривалість (хв)']} хв)" for i, f in enumerate(all_fl)])
@@ -155,18 +193,14 @@ else:
 
                         report = (
                             f"🚁 **Донесення: {first['Підрозділ']}**\n"
-                            f"━━━━━━━━━━━━━━━\n"
                             f"👤 **Пілот:** {first['Оператор']}\n"
                             f"📅 **Дата:** {first['Дата']}\n"
                             f"⏱ **Час завд.:** {first['Час завдання']}\n"
                             f"📍 **Маршрут:** {first['Маршрут']}\n"
-                            f"🛡 **БпЛА:** {first['Дрон']}\n"
                             f"━━━━━━━━━━━━━━━\n"
                             f"🚀 **Вильоти:**\n{flights_list}\n"
                             f"⏱ **Загальний наліт:** {total_min} хв\n"
-                            f"━━━━━━━━━━━━━━━\n"
-                            f"🎯 **Результат:** {first['Результат']}\n"
-                            f"📝 **Примітки:** {first['Примітки']}"
+                            f"🎯 **Результат:** {first['Результат']}"
                         )
 
                         media_sent = False
@@ -181,35 +215,43 @@ else:
 
                         if not media_sent: send_telegram_text(report)
                         
-                        old_df = load_data()
-                        conn.update(worksheet="Sheet1", data=pd.concat([old_df, pd.DataFrame(final_rows)], ignore_index=True))
-                        st.success("Дані успішно відправлені!")
+                        conn.update(worksheet="Sheet1", data=pd.concat([load_data(), pd.DataFrame(final_rows)], ignore_index=True))
+                        st.success("Дані відправлені!")
                         st.session_state.temp_flights = []
                         st.rerun()
 
         with tab2:
             st.header("📜 Генерація донесення")
-            r_date = st.date_input("Оберіть дату")
+            st.info("Оберіть дату та підрозділ (за замовчуванням — ваш), щоб завантажити готовий документ.")
+            r_date = st.date_input("Оберіть дату для звіту", datetime.now())
+            
             df_full = load_data()
             if not df_full.empty:
-                filt = df_full[(df_full['Дата'] == r_date.strftime("%d.%m.%Y")) & (df_full['Підрозділ'] == st.session_state.user['unit'])]
+                # Фільтруємо дані
+                target_date = r_date.strftime("%d.%m.%Y")
+                filt = df_full[(df_full['Дата'] == target_date) & (df_full['Підрозділ'] == st.session_state.user['unit'])]
+                
                 if not filt.empty:
-                    st.success(f"Знайдено польотів: {len(filt)}")
-                    # Функція generate_docx має бути визначена вище
-                else: st.warning("Немає записів за цю дату.")
+                    st.success(f"✅ Знайдено польотів: {len(filt)}")
+                    buf = generate_docx(filt, "Донесення_УПЗ.docx")
+                    
+                    if buf == "ERROR_FILE_MISSING":
+                        st.error("❌ Помилка: Файл шаблону `Донесення_УПЗ.docx` не знайдено на сервері. Завантажте його в GitHub.")
+                    elif buf:
+                        st.download_button(
+                            label="📥 Завантажити донесення (DOCX)",
+                            data=buf,
+                            file_name=f"Donos_UPZ_{target_date}_{st.session_state.user['unit']}.docx",
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                        )
+                else:
+                    st.warning(f"🤷 Даних за {target_date} для підрозділу {st.session_state.user['unit']} не знайдено.")
+            else:
+                st.error("База даних порожня.")
 
         with tab3:
             st.header("📊 Аналітика")
-            df_full = load_data()
-            if not df_full.empty:
-                u_df = df_full[df_full['Підрозділ'] == st.session_state.user['unit']].copy()
-                if not u_df.empty:
-                    u_df['Тривалість (хв)'] = pd.to_numeric(u_df['Тривалість (хв)'], errors='coerce')
-                    st.plotly_chart(px.bar(u_df, x='Дата', y='Тривалість (хв)', color='Результат', title="Наліт підрозділу"), use_container_width=True)
-    else:
-        st.title("🛰️ Адмін-панель")
-        all_data = load_data()
-        if not all_data.empty:
-            st.dataframe(all_data, use_container_width=True)
-            csv = all_data.to_csv(index=False).encode('utf-8-sig')
-            st.download_button("📥 Експорт бази CSV", csv, "uav_base.csv")
+            df_stat = load_data()
+            if not df_stat.empty:
+                u_df = df_stat[df_stat['Підрозділ'] == st.session_state.user['unit']].copy()
+                if not u_df.empty
