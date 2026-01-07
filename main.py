@@ -9,7 +9,7 @@ import os
 from datetime import datetime, time
 
 # --- 1. КОНФІГУРАЦІЯ ТА СЕКРЕТИ ---
-st.set_page_config(page_title="UAV Pilot Cabinet v3.7", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="UAV Pilot Cabinet v4.0", layout="wide", page_icon="🛡️")
 
 def get_secret(key):
     val = st.secrets.get(key)
@@ -53,7 +53,7 @@ def send_telegram_photo(file_obj, caption):
         return "✅ Фото надіслано" if r.json().get("ok") else f"❌ {r.json().get('description')}"
     except: return "❌ Помилка зв'язку"
 
-# --- 4. РОБОТА З ДОКУМЕНТАМИ ТА ДАНИМИ ---
+# --- 4. РОБОТА З ДАНИМИ ТА DOCX ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def load_data():
@@ -68,7 +68,6 @@ def generate_docx(df_filtered, template_path):
         return "ERROR_FILE_MISSING"
     try:
         doc = Document(template_path)
-        # Агрегуємо польоти для звіту
         flights_summary = ""
         for (pilot, drone), group in df_filtered.groupby(['Оператор', 'Дрон']):
             details = ", ".join([f"{r['Взльот']}-{r['Посадка']} ({r['Дистанція (м)']}м)" for _, r in group.iterrows()])
@@ -87,7 +86,6 @@ def generate_docx(df_filtered, template_path):
                 if key in paragraph.text:
                     paragraph.text = paragraph.text.replace(key, value)
         
-        # Перевірка таблиць у документі (якщо вони є)
         for table in doc.tables:
             for row in table.rows:
                 for cell in row.cells:
@@ -99,16 +97,14 @@ def generate_docx(df_filtered, template_path):
         doc.save(buf)
         buf.seek(0)
         return buf
-    except Exception as e:
-        st.error(f"Помилка генерації DOCX: {e}")
-        return None
+    except Exception: return None
 
 def calculate_duration(start, end):
     s, e = start.hour * 60 + start.minute, end.hour * 60 + end.minute
     d = e - s
     return d if d >= 0 else d + 1440
 
-# --- 5. ЛОГІКА СЕСІЇ ---
+# --- 5. СТАН СЕСІЇ ---
 if 'temp_flights' not in st.session_state: st.session_state.temp_flights = []
 if 'logged_in' not in st.session_state: st.session_state.logged_in = False
 
@@ -141,7 +137,7 @@ else:
         tab1, tab2, tab3 = st.tabs(["🚀 Польоти", "📜 Донесення", "📊 Аналітика"])
 
         with tab1:
-            st.header("Внесення даних")
+            st.header("Внесення даних зміні")
             with st.container(border=True):
                 c1, c2, c3, c4 = st.columns(4)
                 m_date = c1.date_input("Дата завдання", datetime.now())
@@ -185,7 +181,7 @@ else:
                 st.dataframe(df_view, use_container_width=True)
                 
                 if st.button("🚀 ВІДПРАВИТИ ВСІ ДАНІ"):
-                    with st.spinner("Відправка..."):
+                    with st.spinner("Відправка звіту..."):
                         all_fl = st.session_state.temp_flights
                         first = all_fl[0]
                         flights_list = "\n".join([f"{i+1}. {f['Взльот']}-{f['Посадка']} ({f['Тривалість (хв)']} хв)" for i, f in enumerate(all_fl)])
@@ -193,14 +189,18 @@ else:
 
                         report = (
                             f"🚁 **Донесення: {first['Підрозділ']}**\n"
+                            f"━━━━━━━━━━━━━━━\n"
                             f"👤 **Пілот:** {first['Оператор']}\n"
                             f"📅 **Дата:** {first['Дата']}\n"
                             f"⏱ **Час завд.:** {first['Час завдання']}\n"
                             f"📍 **Маршрут:** {first['Маршрут']}\n"
+                            f"🛡 **БпЛА:** {first['Дрон']}\n"
                             f"━━━━━━━━━━━━━━━\n"
                             f"🚀 **Вильоти:**\n{flights_list}\n"
                             f"⏱ **Загальний наліт:** {total_min} хв\n"
-                            f"🎯 **Результат:** {first['Результат']}"
+                            f"━━━━━━━━━━━━━━━\n"
+                            f"🎯 **Результат:** {first['Результат']}\n"
+                            f"📝 **Примітки:** {first['Примітки']}"
                         )
 
                         media_sent = False
@@ -222,36 +222,34 @@ else:
 
         with tab2:
             st.header("📜 Генерація донесення")
-            st.info("Оберіть дату та підрозділ (за замовчуванням — ваш), щоб завантажити готовий документ.")
             r_date = st.date_input("Оберіть дату для звіту", datetime.now())
-            
             df_full = load_data()
             if not df_full.empty:
-                # Фільтруємо дані
                 target_date = r_date.strftime("%d.%m.%Y")
                 filt = df_full[(df_full['Дата'] == target_date) & (df_full['Підрозділ'] == st.session_state.user['unit'])]
-                
                 if not filt.empty:
                     st.success(f"✅ Знайдено польотів: {len(filt)}")
                     buf = generate_docx(filt, "Донесення_УПЗ.docx")
-                    
                     if buf == "ERROR_FILE_MISSING":
-                        st.error("❌ Помилка: Файл шаблону `Донесення_УПЗ.docx` не знайдено на сервері. Завантажте його в GitHub.")
+                        st.error("❌ Помилка: Файл `Донесення_УПЗ.docx` не знайдено.")
                     elif buf:
-                        st.download_button(
-                            label="📥 Завантажити донесення (DOCX)",
-                            data=buf,
-                            file_name=f"Donos_UPZ_{target_date}_{st.session_state.user['unit']}.docx",
-                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                        )
-                else:
-                    st.warning(f"🤷 Даних за {target_date} для підрозділу {st.session_state.user['unit']} не знайдено.")
-            else:
-                st.error("База даних порожня.")
+                        st.download_button("📥 Завантажити DOCX", buf, f"Report_{target_date}.docx")
+                else: st.warning(f"Даних за {target_date} не знайдено.")
 
         with tab3:
             st.header("📊 Аналітика")
             df_stat = load_data()
             if not df_stat.empty:
                 u_df = df_stat[df_stat['Підрозділ'] == st.session_state.user['unit']].copy()
-                if not u_df.empty
+                if not u_df.empty: # ТУТ ВИПРАВЛЕНО (додано ':')
+                    u_df['Тривалість (хв)'] = pd.to_numeric(u_df['Тривалість (хв)'], errors='coerce')
+                    st.plotly_chart(px.bar(u_df, x='Дата', y='Тривалість (хв)', color='Результат', title="Наліт підрозділу"), use_container_width=True)
+                else: st.info("Ваших даних ще немає.")
+
+    else:
+        st.title("🛰️ Адмін-панель")
+        all_data = load_data()
+        if not all_data.empty:
+            st.dataframe(all_data, use_container_width=True)
+            csv = all_data.to_csv(index=False).encode('utf-8-sig')
+            st.download_button("📥 Експорт CSV", csv, "uav_base.csv")
