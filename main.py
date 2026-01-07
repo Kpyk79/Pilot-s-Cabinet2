@@ -91,13 +91,14 @@ else:
                 t_takeoff = col1.time_input("Час взльоту", value=time(9, 0), step=60)
                 t_landing = col2.time_input("Час посадки", value=time(9, 30), step=60)
                 
-                # АВТОМАТИЧНИЙ ПІДРАХУНОК
                 flight_duration = calculate_duration(t_takeoff, t_landing)
                 col3.markdown(f"<div class='duration-box'>⏳ Тривалість:<br><b>{flight_duration} хв</b></div>", unsafe_allow_html=True)
                 
                 f_dist = col4.number_input("Дистанція (м)", min_value=0, step=10)
                 
-                res = st.selectbox("Результат", ["Без ознак порушення", "Затримання"])
+                # ОСЬ ТУТ БУЛА ПОМИЛКА: змінили 'res' на 'f_res'
+                f_res = st.selectbox("Результат", ["Без ознак порушення", "Затримання"]) 
+                
                 f_notes = st.text_area("Примітки до цього вильоту")
                 f_photos = st.file_uploader("Завантажити фото/скріншоти", accept_multiple_files=True)
                 
@@ -113,12 +114,13 @@ else:
                         "Посадка": t_landing.strftime("%H:%M"),
                         "Тривалість (хв)": flight_duration,
                         "Дистанція (м)": f_dist,
-                        "Результат": f_res,
+                        "Результат": f_res, # ТЕПЕР ПРАЦЮВАТИМЕ
                         "Примітки": f_notes,
                         "Файлів": len(f_photos) if f_photos else 0
                     }
                     st.session_state.temp_flights.append(flight_data)
                     st.toast(f"Виліт додано! ({flight_duration} хв)")
+                    st.rerun() # Додайте це, щоб список оновився одразу
 
             # Попередній перегляд перед відправкою
             if st.session_state.temp_flights:
