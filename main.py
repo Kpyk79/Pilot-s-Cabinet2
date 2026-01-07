@@ -45,24 +45,38 @@ def upload_to_drive(files, folder_name):
         'mimeType': 'application/vnd.google-apps.folder',
         'parents': [PARENT_FOLDER_ID]
     }
-    folder = service.files().create(body=folder_metadata, fields='id').execute()
-    folder_id = folder.get('id')
+    try:
+        folder = service.files().create(body=folder_metadata, fields='id').execute()
+        folder_id = folder.get('id')
+    except Exception as e:
+        st.error(f"Помилка створення папки: {e}")
+        return []
     
-    # 2. Спроба надати доступ "Будь-хто з посиланням"
+    # 2. Спроба надати доступ (якщо не вийде — ідемо далі)
     try:
         public_permission = {'type': 'anyone', 'role': 'viewer'}
         service.permissions().create(fileId=folder_id, body=public_permission).execute()
-    except Exception as e:
-        # Якщо публічний доступ заборонений політикою організації, просто пропускаємо цей крок
-        st.warning("Публічний доступ не надано (обмеження Google Диску), але файли завантажені.")
+    except:
+        pass # Пропускаємо, якщо політика безпеки забороняє публічність
     
     links = []
     for uploaded_file in files:
         file_metadata = {'name': uploaded_file.name, 'parents': [folder_id]}
-        media = MediaIoBaseUpload(io.BytesIO(uploaded_file.getvalue()), 
-                                  mimetype=uploaded_file.type, resumable=True)
-        file = service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
-        links.append(file.get('webViewLink'))
+        # ЗМІНА ТУТ: resumable=False робить завантаження простішим і надійнішим для фото
+        media = MediaIoBaseUpload(
+            io.BytesIO(uploaded_file.getvalue()), 
+            mimetype=uploaded_file.type, 
+            resumable=False 
+        )
+        try:
+            file = service.files().create(
+                body=file_metadata, 
+                media_body=media, 
+                fields='id, webViewLink'
+            ).execute()
+            links.append(file.get('webViewLink'))
+        except Exception as e:
+            st.warning(f"Не вдалося завантажити файл {uploaded_file.name}: {e}")
     
     return links
 
