@@ -10,11 +10,11 @@ from datetime import datetime, time
 # --- 1. КОНФІГУРАЦІЯ ТА ДІАГНОСТИКА СЕКРЕТІВ ---
 st.set_page_config(page_title="UAV Pilot Cabinet v2.1", layout="wide", page_icon="🛡️")
 
-# Зчитування секретів Telegram з декількох рівнів TOML
+# Зчитування секретів Telegram (підтримка різних рівнів вкладеності в TOML)
 TG_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN") or st.secrets.get("connections", {}).get("gsheets", {}).get("TELEGRAM_BOT_TOKEN")
 TG_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID") or st.secrets.get("connections", {}).get("gsheets", {}).get("TELEGRAM_CHAT_ID")
 
-# Стилізація інтерфейсу
+# Стилізація
 st.markdown("""
     <style>
     .main { background-color: #f8f9fa; }
@@ -29,9 +29,9 @@ DRONES = ["DJI Mavic 3 Pro", "DJI Mavic 3E", "DJI Mavic 3T", "DJI Matrice 30T", 
 ADMIN_PASSWORD = "admin_secret"
 
 def send_to_telegram(file_obj, caption):
-    """Надсилає медіа в Telegram канал/групу"""
+    """Надсилає медіа в Telegram через API"""
     if not TG_TOKEN or not TG_CHAT_ID:
-        return "❌ Помилка: Ключі TG не знайдені в Secrets"
+        return "❌ Помилка: Ключі TG не налаштовані"
     
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto"
     try:
@@ -45,7 +45,7 @@ def send_to_telegram(file_obj, caption):
     except Exception as e:
         return f"❌ Зв'язок: {str(e)}"
 
-# Побудова з'єднання з Google Sheets
+# Підключення до Google Sheets
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def load_data():
@@ -83,14 +83,13 @@ def generate_docx(df_filtered, template_path):
         return buf
     except: return None
 
-# --- 3. ЛОГІКА СЕСІЇ ТА АВТОРИЗАЦІЯ ---
+# --- 3. ЛОГІКА СЕСІЇ ---
 if 'temp_flights' not in st.session_state: st.session_state.temp_flights = []
 if 'logged_in' not in st.session_state: st.session_state.logged_in = False
 
+# --- 4. ІНТЕРФЕЙС ВХОДУ ---
 if not st.session_state.logged_in:
     st.title("🛡️ Вхід у систему БпЛА")
-    if not TG_TOKEN: st.warning("⚠️ Telegram Bot Token не виявлено. Перевірте Secrets.")
-    
     role_choice = st.radio("Режим:", ["Пілот", "Адміністратор"], horizontal=True)
     with st.container(border=True):
         if role_choice == "Пілот":
@@ -108,21 +107,21 @@ if not st.session_state.logged_in:
                     st.session_state.logged_in, st.session_state.role = True, "Admin"
                     st.rerun()
 else:
-    # --- 4. ОСНОВНИЙ ІНТЕРФЕЙС ---
-    st.sidebar.markdown(f"**Користувач:** {st.session_state.role}")
+    st.sidebar.markdown(f"**👤 {st.session_state.role}**")
     if st.sidebar.button("Вийти"):
         st.session_state.logged_in = False
         st.session_state.temp_flights = []
         st.rerun()
 
     if st.session_state.role == "Pilot":
-        t1, t2, t3 = st.tabs(["🚀 Польоти", "📜 Донесення", "📊 Аналітика"])
+        # СТВОРЕННЯ ВКЛАДОК З ПРАВИЛЬНИМИ НАЗВАМИ ЗМІННИХ
+        tab1, tab2, tab3 = st.tabs(["🚀 Польоти", "📜 Донесення", "📊 Аналітика"])
 
-        with t1:
-            st.header("Внесення даних зміни")
+        with tab1:
+            st.header("Внесення польотних даних")
             with st.container(border=True):
                 c1, c2, c3, c4 = st.columns([1.5, 1, 1, 2])
-                m_date = c1.date_input("Дата", datetime.now())
+                m_date = c1.date_input("Дата завдання", datetime.now())
                 m_start = c2.time_input("Початок зміни", value=time(8,0))
                 m_end = c3.time_input("Кінець зміни", value=time(20,0))
                 m_route = c4.text_input("Напрямок/Маршрут")
@@ -137,10 +136,10 @@ else:
                 f_dist = col4.number_input("Дистанція (м)", min_value=0, step=10)
                 
                 f_res = st.selectbox("Результат", ["Без ознак порушення", "Затримання", "Виявлення цілі"])
-                f_note = st.text_area("Примітки до вильоту")
+                f_note = st.text_area("Примітки")
                 f_imgs = st.file_uploader("📸 Скріншоти (TG)", accept_multiple_files=True)
 
-                if st.button("➕ Додати у чергу"):
+                if st.button("➕ Додати у список"):
                     st.session_state.temp_flights.append({
                         "Дата": m_date.strftime("%d.%m.%Y"),
                         "Час завдання": f"{m_start.strftime('%H:%M')}-{m_end.strftime('%H:%M')}",
@@ -160,7 +159,7 @@ else:
 
             if st.session_state.temp_flights:
                 st.write("---")
-                st.subheader("📋 Вильоти до відправки")
+                st.subheader("📋 Вильоти у черзі:")
                 st.dataframe(pd.DataFrame(st.session_state.temp_flights)[["Взльот", "Посадка", "Результат"]], use_container_width=True)
                 
                 if st.button("🚀 ВІДПРАВИТИ ВСІ ДАНІ (Sheets + TG)"):
@@ -179,36 +178,4 @@ else:
                         
                         old_df = load_data()
                         updated_df = pd.concat([old_df, pd.DataFrame(final_rows)], ignore_index=True)
-                        conn.update(worksheet="Sheet1", data=updated_df)
-                        
-                        st.success(f"Дані збережено! Польотів: {len(final_rows)}")
-                        st.session_state.temp_flights = []
-                        st.rerun()
-
-        with tab2:
-            st.header("Генерація донесення")
-            r_date = st.date_input("Оберіть дату")
-            df_full = load_data()
-            if not df_full.empty:
-                filt = df_full[(df_full['Дата'] == r_date.strftime("%d.%m.%Y")) & (df_full['Підрозділ'] == st.session_state.user['unit'])]
-                if not filt.empty:
-                    buf = generate_docx(filt, "Донесення_УПЗ.docx")
-                    if buf: st.download_button("📥 Скачати DOCX", buf, f"Report_{r_date.strftime('%d.%m.%Y')}.docx")
-                else: st.warning("Немає записів за цю дату.")
-
-        with tab3:
-            st.header("📊 Ваша аналітика")
-            df_full = load_data()
-            if not df_full.empty:
-                u_df = df_full[df_full['Підрозділ'] == st.session_state.user['unit']].copy()
-                if not u_df.empty:
-                    u_df['Тривалість (хв)'] = pd.to_numeric(u_df['Тривалість (хв)'], errors='coerce')
-                    st.plotly_chart(px.bar(u_df, x='Дата', y='Тривалість (хв)', color='Результат', title="Ваш наліт"), use_container_width=True)
-
-    else:
-        st.title("🛰️ Адмін-панель")
-        all_data = load_data()
-        if not all_data.empty:
-            st.dataframe(all_data, use_container_width=True)
-            csv = all_data.to_csv(index=False).encode('utf-8-sig')
-            st.download_button("📥 Експорт бази CSV", csv, "uav_full_base.csv")
+                        conn.update(worksheet="Sheet1", data=
