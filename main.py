@@ -8,7 +8,7 @@ import os
 from datetime import datetime, time
 
 # --- 1. КОНФІГУРАЦІЯ ТА СЕКРЕТИ ---
-st.set_page_config(page_title="UAV Pilot Cabinet v5.1", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="UAV Pilot Cabinet v5.2", layout="wide", page_icon="🛡️")
 
 def get_secret(key):
     val = st.secrets.get(key)
@@ -57,7 +57,7 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 
 def load_data(ws="Sheet1"):
     try:
-        # ПАРАМЕТР ttl=0 ПРИМУШУЄ ПРОГРАМУ БРАТИ СВІЖІ ДАНІ БЕЗ КЕШУ
+        # ttl=0 забезпечує миттєве оновлення даних без кешу
         return conn.read(worksheet=ws, ttl=0).dropna(how="all")
     except:
         return pd.DataFrame()
@@ -86,7 +86,7 @@ if 'uploader_key' not in st.session_state: st.session_state.uploader_key = 0
 
 st.markdown("<style>.stButton>button { width: 100%; border-radius: 8px; background-color: #2b4231; color: white; height: 3.5em; font-weight: bold; } .duration-box { background-color: #f1f3f5; padding: 10px; border-radius: 8px; text-align: center; border: 1px solid #dee2e6; color: #2b4231; font-size: 1.2em; }</style>", unsafe_allow_html=True)
 
-# --- 6. ЛОГІКА ВХОДУ ---
+# --- 6. ЛОГІКА ІНТЕРФЕЙСУ ---
 if not st.session_state.logged_in:
     st.title("🛡️ Кабінет пілота БпЛА")
     role = st.radio("Режим:", ["Пілот", "Адміністратор"], horizontal=True)
@@ -137,7 +137,12 @@ else:
             st.write("---")
             st.subheader("📋 Список польотів (чернетка)")
             df_temp = pd.DataFrame(st.session_state.temp_flights)
-            st.dataframe(df_temp[["Взльот", "Посадка", "Тривалість (хв)", "Номер АКБ", "Цикли АКБ"]], use_container_width=True)
+            
+            # ОНОВЛЕНІ СТОВПЦІ: ВІДСТАНЬ ПІСЛЯ ПОСАДКИ
+            cols_to_show = ["Взльот", "Посадка", "Дистанція (м)", "Тривалість (хв)", "Номер АКБ", "Цикли АКБ"]
+            df_v = df_temp[cols_to_show]
+            df_v.columns = ["Зліт", "Посадка", "Відстань", "Хв", "№ АКБ", "Цикли"]
+            st.dataframe(df_v, use_container_width=True)
             
             c_b1, c_b2, c_b3 = st.columns(3)
             if c_b1.button("🗑️ Видалити останній"): st.session_state.temp_flights.pop(); st.rerun()
@@ -169,11 +174,9 @@ else:
 
     with tab2:
         st.header("📜 Мій журнал польотів")
-        # ПРИМУШУЄМО ПРОГРАМУ ПЕРЕЧИТАТИ ТАБЛИЦЮ
         df_hist = load_data("Sheet1")
         if not df_hist.empty:
             if st.session_state.role == "Pilot":
-                # Фільтруємо ТІЛЬКИ дані поточного пілота
                 personal_df = df_hist[df_hist['Оператор'] == st.session_state.user['name']]
                 st.info(f"Відображено ваші польоти ({len(personal_df)} записів)")
             else:
@@ -185,7 +188,7 @@ else:
             st.info("Архів порожній.")
 
     with tab3:
-        st.header("📊 Аналітика")
+        st.header("📊 Статистика нальоту по місяцях")
         df_st = load_data("Sheet1")
         if not df_st.empty:
             if st.session_state.role == "Pilot":
@@ -200,5 +203,11 @@ else:
                     Затримання=('Результат', lambda x: (x == "Затримання").sum()),
                     Хвилини=('Тривалість (хв)', 'sum')
                 ).reset_index()
-                res['Наліт (год)'] = (res['Хвилини'] / 60).round(1)
-                st.table(res[['Місяць', 'Польоти', 'Затримання', 'Наліт (год)']])
+                
+                # ОНОВЛЕННЯ: РАХУЄМО В ХВИЛИНАХ
+                res['Наліт (хв)'] = res['Хвилини']
+                
+                final_table = res[['Місяць', 'Польоти', 'Затримання', 'Наліт (хв)']]
+                final_table.columns = ["📅 Місяць", "🚁 Вильоти", "🎯 Затримання", "⏱ Наліт (хв)"]
+                
+                st.table(final_table.sort_values(by="📅 Місяць", ascending=False))
