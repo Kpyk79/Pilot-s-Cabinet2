@@ -8,7 +8,7 @@ import os
 from datetime import datetime, time
 
 # --- 1. КОНФІГУРАЦІЯ ТА СЕКРЕТИ ---
-st.set_page_config(page_title="UAV Pilot Cabinet v5.0", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="UAV Pilot Cabinet v5.1", layout="wide", page_icon="🛡️")
 
 def get_secret(key):
     val = st.secrets.get(key)
@@ -56,8 +56,11 @@ def add_flight_callback():
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def load_data(ws="Sheet1"):
-    try: return conn.read(worksheet=ws).dropna(how="all")
-    except: return pd.DataFrame()
+    try:
+        # ПАРАМЕТР ttl=0 ПРИМУШУЄ ПРОГРАМУ БРАТИ СВІЖІ ДАНІ БЕЗ КЕШУ
+        return conn.read(worksheet=ws, ttl=0).dropna(how="all")
+    except:
+        return pd.DataFrame()
 
 def send_telegram_msg(all_fl):
     if not TG_TOKEN or not TG_CHAT_ID: return
@@ -92,7 +95,6 @@ if not st.session_state.logged_in:
             u = st.selectbox("Підрозділ:", UNITS); n = st.text_input("Звання та прізвище:"); d = st.selectbox("Дрон:", DRONES)
             if st.button("Увійти") and n:
                 st.session_state.logged_in, st.session_state.role, st.session_state.user = True, "Pilot", {"unit": u, "name": n, "drone": d}
-                # Підвантаження чернеток з хмари
                 df_d = load_data("Drafts")
                 if not df_d.empty:
                     my_d = df_d[df_d['Оператор'] == n].to_dict('records')
@@ -104,7 +106,6 @@ if not st.session_state.logged_in:
                 st.session_state.logged_in, st.session_state.role = True, "Admin"
                 st.rerun()
 else:
-    # --- ОСНОВНИЙ ЕКРАН ---
     st.sidebar.markdown(f"👤 **{st.session_state.user['name'] if st.session_state.role=='Pilot' else 'Адмін'}**")
     if st.sidebar.button("Вийти"): st.session_state.logged_in = False; st.rerun()
 
@@ -151,9 +152,8 @@ else:
             if c_b3.button("🚀 ВІДПРАВИТИ ВСІ ДАНІ"):
                 with st.spinner("Збереження та відправка..."):
                     all_fl = st.session_state.temp_flights
-                    send_telegram_msg(all_fl) # Відправка в ТГ
+                    send_telegram_msg(all_fl)
                     
-                    # Підготовка до збереження в GSheets
                     final_to_db = []
                     for f in all_fl:
                         row = f.copy(); row.pop('files', None); row["Медіа (статус)"] = "З фото" if f.get('files') else "Текст"
@@ -163,30 +163,24 @@ else:
                     updated_db = pd.concat([db_main, pd.DataFrame(final_to_db)], ignore_index=True)
                     conn.update(worksheet="Sheet1", data=updated_db)
                     
-                    # Очищення хмари
                     df_d = load_data("Drafts")
                     conn.update(worksheet="Drafts", data=df_d[df_d['Оператор'] != st.session_state.user['name']])
                     st.success("✅ Дані успішно занесено в архів!"); st.session_state.temp_flights = []; st.rerun()
 
     with tab2:
         st.header("📜 Мій журнал польотів")
+        # ПРИМУШУЄМО ПРОГРАМУ ПЕРЕЧИТАТИ ТАБЛИЦЮ
         df_hist = load_data("Sheet1")
         if not df_hist.empty:
-            # ПЕРСОНАЛЬНА ФІЛЬТРАЦІЯ
             if st.session_state.role == "Pilot":
-                # Пілот бачить лише свої дані
+                # Фільтруємо ТІЛЬКИ дані поточного пілота
                 personal_df = df_hist[df_hist['Оператор'] == st.session_state.user['name']]
                 st.info(f"Відображено ваші польоти ({len(personal_df)} записів)")
             else:
-                # Адмін бачить все з фільтром підрозділу
                 u_filter = st.selectbox("Оберіть підрозділ для перегляду:", ["Всі"] + UNITS)
                 personal_df = df_hist if u_filter == "Всі" else df_hist[df_hist['Підрозділ'] == u_filter]
 
-            # Виведення таблиці в тому вигляді, який вам подобався (v4.7)
             st.dataframe(personal_df.sort_values(by="Дата", ascending=False), use_container_width=True)
-            
-            if st.button("📄 Сформувати DOCX звіт"):
-                st.info("Функція генерації звіту використовує дані з таблиці вище.")
         else:
             st.info("Архів порожній.")
 
@@ -197,13 +191,14 @@ else:
             if st.session_state.role == "Pilot":
                 df_st = df_st[df_st['Оператор'] == st.session_state.user['name']]
             
-            df_st['Дата_dt'] = pd.to_datetime(df_st['Дата'], format='%d.%m.%Y', errors='coerce')
-            df_st['Місяць'] = df_st['Дата_dt'].dt.strftime('%Y-%m')
-            
-            res = df_st.groupby('Місяць').agg(
-                Польоти=('Дата', 'count'),
-                Затримання=('Результат', lambda x: (x == "Затримання").sum()),
-                Хвилини=('Тривалість (хв)', 'sum')
-            ).reset_index()
-            res['Наліт (год)'] = (res['Хвилини'] / 60).round(1)
-            st.table(res[['Місяць', 'Польоти', 'Затримання', 'Наліт (год)']])
+            if not df_st.empty:
+                df_st['Дата_dt'] = pd.to_datetime(df_st['Дата'], format='%d.%m.%Y', errors='coerce')
+                df_st['Місяць'] = df_st['Дата_dt'].dt.strftime('%Y-%m')
+                
+                res = df_st.groupby('Місяць').agg(
+                    Польоти=('Дата', 'count'),
+                    Затримання=('Результат', lambda x: (x == "Затримання").sum()),
+                    Хвилини=('Тривалість (хв)', 'sum')
+                ).reset_index()
+                res['Наліт (год)'] = (res['Хвилини'] / 60).round(1)
+                st.table(res[['Місяць', 'Польоти', 'Затримання', 'Наліт (год)']])
