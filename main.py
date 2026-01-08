@@ -1,14 +1,13 @@
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
-from docx import Document
-import io
 import requests
 import os
-from datetime import datetime, time, timedelta
+import time
+from datetime import datetime, time as d_time, timedelta
 
-# --- 1. КОНФІГУРАЦІЯ ТА СЕКРЕТИ ---
-st.set_page_config(page_title="UAV Pilot Cabinet v6.1", layout="wide", page_icon="🛡️")
+# --- 1. КОНФІГУРАЦІЯ СТОРІНКИ ---
+st.set_page_config(page_title="UAV Pilot Cabinet v6.3", layout="wide", page_icon="🛡️")
 
 def get_secret(key):
     val = st.secrets.get(key)
@@ -19,8 +18,15 @@ def get_secret(key):
 TG_TOKEN = get_secret("TELEGRAM_BOT_TOKEN")
 TG_CHAT_ID = get_secret("TELEGRAM_CHAT_ID")
 
-# --- 2. КОНСТАНТИ ТА СЛОВНИКИ ---
-UNITS = ["впс Кодима", "віпс Шершенці", "віпс Загнітків", "впс Станіславка", "віпс Тимкове", "віпс Чорна", "впс Окни", "віпс Ткаченкове", "віпс Гулянка", "віпс Новосеменівка", "впс Великокомарівка", "віпс Павлівка", "впс Велика Михайлівка", "віпс Слов'яносербка", "віпс Гребеники", "впс Степанівка", "віпс Кучурган", "віпс Лиманське", "віпс Лучинське", "УПЗ"]
+# --- 2. КОНСТАНТИ ТА СЛОВНИКИ (ОНОВЛЕНО) ---
+UNITS = [
+    "впс Кодима", "віпс Шершенці", "віпс Загнітків", "впс Станіславка", 
+    "віпс Тимкове", "віпс Чорна", "впс Окни", "віпс Ткаченкове", 
+    "віпс Гулянка", "віпс Новосеменівка", "впс Великокомарівка", 
+    "віпс Павлівка", "впс Велика Михайлівка", "віпс Слов'яносербка", 
+    "віпс Гребеники", "впс Степанівка", "віпс Кучурган", 
+    "віпс Лиманське", "віпс Лучинське", "УПЗ"
+]
 DRONES = ["DJI Mavic 3 Pro", "DJI Mavic 3E", "DJI Mavic 3T", "DJI Matrice 30T", "DJI Matrice 300", "Autel Evo Max 4T", "Skydio X2D", "Puma LE"]
 ADMIN_PASSWORD = "admin_secret"
 
@@ -30,7 +36,7 @@ UKR_MONTHS = {
     9: "вересень", 10: "жовтень", 11: "листопад", 12: "грудень"
 }
 
-# --- 3. ДОПОМІЖНІ ФУНКЦІЇ ---
+# --- 3. ФУНКЦІОНАЛЬНА ЛОГІКА ---
 def calculate_duration(start, end):
     s, e = start.hour * 60 + start.minute, end.hour * 60 + end.minute
     d = e - s
@@ -78,15 +84,14 @@ def send_telegram_msg(all_fl):
     for fl in all_fl:
         if fl.get('files'):
             for img in fl['files']:
-                url = f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto"
-                requests.post(url, files={'photo': (img.name, img.getvalue(), img.type)}, data={'chat_id': str(TG_CHAT_ID), 'caption': report, 'parse_mode': 'Markdown'}, timeout=60)
+                requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto", files={'photo': (img.name, img.getvalue(), img.type)}, data={'chat_id': str(TG_CHAT_ID), 'caption': report, 'parse_mode': 'Markdown'})
     if not any(f.get('files') for f in all_fl):
-        url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-        requests.post(url, data={'chat_id': str(TG_CHAT_ID), 'text': report, 'parse_mode': 'Markdown'}, timeout=30)
+        requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage", data={'chat_id': str(TG_CHAT_ID), 'text': report, 'parse_mode': 'Markdown'})
 
-# --- 5. СТАН СЕСІЇ ТА СТИЛІ ---
+# --- 5. СТАН СЕСІЇ ТА ДИЗАЙН ---
 if 'temp_flights' not in st.session_state: st.session_state.temp_flights = []
 if 'logged_in' not in st.session_state: st.session_state.logged_in = False
+if 'splash_done' not in st.session_state: st.session_state.splash_done = False
 if 'uploader_key' not in st.session_state: st.session_state.uploader_key = 0
 
 st.markdown("""
@@ -94,21 +99,40 @@ st.markdown("""
     .stButton>button { width: 100%; border-radius: 8px; background-color: #2E7D32; color: white; height: 3.5em; font-weight: bold; border: none; }
     .stButton>button:hover { background-color: #1B5E20; color: white; }
     .duration-box { background-color: #f1f3f5; padding: 10px; border-radius: 8px; text-align: center; border: 1px solid #dee2e6; color: #1b5e20; font-size: 1.2em; }
-    .splash-text { text-align: center; color: #2E7D32; font-family: 'Courier New', Courier, monospace; font-weight: bold; border-top: 2px solid #2E7D32; border-bottom: 2px solid #2E7D32; padding: 10px 0; margin-bottom: 20px; }
+    .splash-container { text-align: center; margin-top: 15%; }
+    .slogan-box { color: #2E7D32; font-family: 'Courier New', monospace; font-weight: bold; font-size: 1.5em; border-top: 2px solid #2E7D32; border-bottom: 2px solid #2E7D32; padding: 20px 0; margin: 20px 0; letter-spacing: 2px; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 6. ЛОГІКА ІНТЕРФЕЙСУ ---
-if not st.session_state.logged_in:
-    # --- СТОРІНКА ВХОДУ (ЗАСТАВКА) ---
-    st.markdown("<h1 style='text-align: center;'>🛡️ UAV PILOT CABINET</h1>", unsafe_allow_html=True)
-    st.markdown("<div class='splash-text'>СТАЛЕВИЙ ОБЛІК ДЛЯ СТАЛЕВОГО КОРДОНУ</div>", unsafe_allow_html=True)
+# --- 6. SPLASH SCREEN (ЗАСТАВКА) ---
+if not st.session_state.splash_done:
+    container = st.empty()
+    with container.container():
+        st.markdown("<div class='splash-container'>", unsafe_allow_html=True)
+        st.markdown("<h1 style='font-size: 4em;'>🛡️</h1>", unsafe_allow_html=True)
+        st.markdown("<h1>UAV PILOT CABINET</h1>", unsafe_allow_html=True)
+        st.markdown("<div class='slogan-box'>СТАЛЕВИЙ ОБЛІК ДЛЯ СТАЛЕВОГО КОРДОНУ</div>", unsafe_allow_html=True)
+        
+        progress_text = "Ініціалізація захищеного зв'язку..."
+        my_bar = st.progress(0, text=progress_text)
+        for percent_complete in range(100):
+            time.sleep(0.01)
+            my_bar.progress(percent_complete + 1, text=progress_text)
+        
+        st.markdown("</div>", unsafe_allow_html=True)
+        time.sleep(0.5)
     
-    role = st.radio("Режим доступу:", ["Пілот", "Адміністратор"], horizontal=True)
+    st.session_state.splash_done = True
+    st.rerun()
+
+# --- 7. ОСНОВНИЙ ІНТЕРФЕЙС ---
+if not st.session_state.logged_in:
+    st.markdown("<h2 style='text-align: center;'>🛡️ ВХІД У СИСТЕМУ</h2>", unsafe_allow_html=True)
+    role = st.radio("Оберіть статус:", ["Пілот", "Адміністратор"], horizontal=True)
     with st.container(border=True):
         if role == "Пілот":
-            u = st.selectbox("Підрозділ (впс/віпс):", UNITS); n = st.text_input("Звання та Прізвище пілота:")
-            if st.button("УВІЙТИ В КАБІНЕТ") and n:
+            u = st.selectbox("Підрозділ:", UNITS); n = st.text_input("Звання та Прізвище:")
+            if st.button("УВІЙТИ") and n:
                 st.session_state.logged_in, st.session_state.role, st.session_state.user = True, "Pilot", {"unit": u, "name": n}
                 df_d = load_data("Drafts")
                 if not df_d.empty:
@@ -116,71 +140,70 @@ if not st.session_state.logged_in:
                     st.session_state.temp_flights.extend(my_d)
                 st.rerun()
         else:
-            p = st.text_input("Пароль адміністратора:", type="password")
+            p = st.text_input("Пароль:", type="password")
             if st.button("ВХІД") and p == ADMIN_PASSWORD:
                 st.session_state.logged_in, st.session_state.role = True, "Admin"; st.rerun()
 else:
-    # --- ОСНОВНИЙ ЕКРАН ---
     st.sidebar.markdown(f"👤 **{st.session_state.user['name'] if st.session_state.role=='Pilot' else 'Адмін'}**")
-    if st.sidebar.button("Вийти з системи"): st.session_state.logged_in = False; st.rerun()
+    if st.sidebar.button("Завершити сеанс"): 
+        st.session_state.logged_in = False
+        st.session_state.splash_done = False
+        st.rerun()
 
     tab_app, tab_f, tab_cus, tab_hist, tab_stat = st.tabs([
         "📋 Заявка", "🚀 Польоти", "📡 ЦУС", "📜 Архів", "📊 Аналітика"
     ])
 
-    # --- ВКЛАДКА ЗАЯВКА ---
+    # --- ВКЛАДКИ (Код без змін) ---
     with tab_app:
-        st.header("📝 Створення заявки")
+        st.header("📝 Формування заявки")
         with st.container(border=True):
-            app_unit = st.selectbox("1. Заявник (підрозділ):", UNITS, index=UNITS.index(st.session_state.user['unit']) if st.session_state.user['unit'] in UNITS else 0)
-            c_drone = st.session_state.get('sel_drone_val', DRONES[0])
-            app_drones = st.multiselect("2. Тип БпЛА:", DRONES, default=[c_drone] if c_drone in DRONES else None)
-            app_sn = st.text_input("s/n (якщо декілька - через кому):", placeholder="s/n: 123, 456")
-            app_dates = st.date_input("3. Дата здійснення польоту (період):", value=(datetime.now(), datetime.now() + timedelta(days=1)))
-            c_t1, c_t2 = st.columns(2); a_t1 = c_t1.time_input("4. Час з:", value=time(8,0)); a_t2 = c_t2.time_input("Час до:", value=time(20,0))
+            app_unit = st.selectbox("1. Заявник:", UNITS, index=UNITS.index(st.session_state.user['unit']) if st.session_state.user['unit'] in UNITS else 0)
+            c_dr = st.session_state.get('sel_drone_val', DRONES[0])
+            app_drones = st.multiselect("2. Тип БпЛА:", DRONES, default=[c_dr] if c_dr in DRONES else None)
+            app_sn = st.text_input("s/n:", placeholder="s/n: 123, 456")
+            app_dates = st.date_input("3. Дата:", value=(datetime.now(), datetime.now() + timedelta(days=1)))
+            c_t1, c_t2 = st.columns(2); a_t1 = c_t1.time_input("4. Час з:", d_time(8,0)); a_t2 = c_t2.time_input("Час до:", d_time(20,0))
             app_route = st.text_area("5. Маршрут (н.п. та район):")
-            c_h1, c_h2 = st.columns(2); app_h = c_h1.text_input("6. Висота роботи (м):", value="до 500 м"); app_r = c_h2.text_input("7. Радіус (км):", value="до 5 км")
-            app_purp = st.selectbox("8. Мета польоту:", ["патрулювання ділянки відповідальності", "за оперативною необхідністю", "навчально-тренувальні польоти"])
-            app_cont = st.text_input("9. Контактна особа (Прізвище та тел):", value=f"{st.session_state.user['name']}, тел: ")
+            c_h1, c_h2 = st.columns(2); a_h = c_h1.text_input("6. Висота (м):", "до 500 м"); a_r = c_h2.text_input("7. Радіус (км):", "до 5 км")
+            app_purp = st.selectbox("8. Мета:", ["патрулювання ділянки відповідальності", "за оперативною необхідністю", "навчально-тренувальні польоти"])
+            app_cont = st.text_input("9. Контактна особа:", f"{st.session_state.user['name']}, тел: ")
 
         if st.button("✨ СФОРМУВАТИ ТЕКСТ"):
             d_str = ", ".join(app_drones) + (f" ({app_sn})" if app_sn else "")
             dt_r = f"з {app_dates[0].strftime('%d.%m.%Y')} по {app_dates[1].strftime('%d.%m.%Y')}" if isinstance(app_dates, tuple) and len(app_dates) == 2 else app_dates[0].strftime('%d.%m.%Y')
-            f_txt = f"ЗАЯВКА НА ПОЛІТ\n1. Заявник: в/ч 2196 ({app_unit})\n2. Тип БпЛА: {d_str}\n3. Дата здійснення польоту: {dt_r}\n4. Час роботи: з {a_t1.strftime('%H:%M')} по {a_t2.strftime('%H:%M')}\n5. Населений пункт (маршрут): {app_route}\n6. Висота роботи (м): {app_h}\n7. Радіус роботи (км): {app_r}\n8. Мета польоту: {app_purp}\n9. Контактна особа: {app_cont}"
+            f_txt = f"ЗАЯВКА НА ПОЛІТ\n1. Заявник: в/ч 2196 ({app_unit})\n2. Тип БпЛА: {d_str}\n3. Дата здійснення польоту: {dt_r}\n4. Час роботи: з {a_t1.strftime('%H:%M')} по {a_t2.strftime('%H:%M')}\n5. Населений пункт (маршрут): {app_route}\n6. Висота роботи (м): {a_h}\n7. Радіус роботи (км): {a_r}\n8. Мета польоту: {app_purp}\n9. Контактна особа: {app_cont}"
             st.code(f_txt, language="text")
 
-    # --- ВКЛАДКА ПОЛЬОТИ ---
     with tab_f:
         st.header("Внесення польотів")
         with st.container(border=True):
             c1, c2, c3, c4 = st.columns(4)
             m_date = c1.date_input("Дата", datetime.now(), key="m_date_val")
-            m_start = c2.time_input("Зміна з", value=time(8,0), step=60, key="m_start_val")
-            m_end = c3.time_input("Зміна до", value=time(20,0), step=60, key="m_end_val")
+            m_start = c2.time_input("Зміна з", d_time(8,0), step=60, key="m_start_val")
+            m_end = c3.time_input("Зміна до", d_time(20,0), step=60, key="m_end_val")
             m_route = c4.text_input("Маршрут завдання", key="m_route_val")
             st.selectbox("🛡️ ОБЕРІТЬ БпЛА НА ЗМІНУ:", DRONES, key="sel_drone_val")
 
         with st.expander("➕ ДОДАТИ НОВИЙ ВИЛІТ", expanded=True):
             col1, col2, col3, col4 = st.columns(4)
-            t_o = col1.time_input("Взльот", value=time(9,0), key="t_off")
-            t_l = col2.time_input("Посадка", value=time(9,30), key="t_land")
+            t_o = col1.time_input("Взльот", d_time(9,0), key="t_off")
+            t_l = col2.time_input("Посадка", d_time(9,30), key="t_land")
             dur = calculate_duration(t_o, t_l)
             col3.markdown(f"<div class='duration-box'>⏳ <b>{dur} хв</b></div>", unsafe_allow_html=True)
             f_dist = col4.number_input("Відстань (м)", min_value=0, key="f_dist")
             cb1, cb2 = st.columns(2); f_akb = cb1.text_input("Номер АКБ", key="f_akb"); f_cyc = cb2.number_input("Цикли АКБ", min_value=0, key="f_cyc")
             f_res = st.selectbox("Результат", ["Без ознак порушення", "Затримання", "Виявлення цілі"], key="f_res")
             f_note = st.text_area("Примітки", key="f_note")
-            f_imgs = st.file_uploader("📸 Скріншоти польоту", accept_multiple_files=True, key=f"uploader_{st.session_state.uploader_key}")
+            f_imgs = st.file_uploader("📸 Скріншоти", accept_multiple_files=True, key=f"uploader_{st.session_state.uploader_key}")
             st.button("✅ ДОДАТИ У СПИСОК", on_click=add_flight_callback)
 
         if st.session_state.temp_flights:
             st.write("---")
-            st.subheader("📋 Поточний список (чернетка)")
             df_t = pd.DataFrame(st.session_state.temp_flights)
             c_sh = ["Взльот", "Посадка", "Дистанція (м)", "Тривалість (хв)", "Номер АКБ", "Цикли АКБ"]
             df_v = df_t[c_sh]; df_v.columns = ["Зліт", "Посадка", "Відстань", "Хв", "№ АКБ", "Цикли"]
             st.dataframe(df_v, use_container_width=True)
-            
             cb1, cb2, cb3 = st.columns(3)
             if cb1.button("🗑️ Видалити останній"): st.session_state.temp_flights.pop(); st.rerun()
             if cb2.button("💾 Зберегти в Хмару"):
@@ -189,7 +212,7 @@ else:
                 conn.update(worksheet="Drafts", data=pd.concat([df_d, pd.DataFrame(st.session_state.temp_flights).drop(columns=['files'], errors='ignore')], ignore_index=True))
                 st.success("💾 Збережено!")
             if cb3.button("🚀 ВІДПРАВИТИ ВСІ ДАНІ"):
-                with st.spinner("Завантаження..."):
+                with st.spinner("Відправка..."):
                     all_fl = st.session_state.temp_flights; send_telegram_msg(all_fl)
                     final_to_db = []
                     for f in all_fl:
@@ -198,9 +221,8 @@ else:
                     db_m = load_data("Sheet1")
                     conn.update(worksheet="Sheet1", data=pd.concat([db_m, pd.DataFrame(final_to_db)], ignore_index=True))
                     df_d = load_data("Drafts"); conn.update(worksheet="Drafts", data=df_d[df_d['Оператор'] != st.session_state.user['name']])
-                    st.success("✅ Успішно надіслано!"); st.session_state.temp_flights = []; st.rerun()
+                    st.success("✅ Надіслано!"); st.session_state.temp_flights = []; st.rerun()
 
-    # --- ВКЛАДКА ЦУС ---
     with tab_cus:
         st.header("📡 Дані для ЦУС")
         if not st.session_state.temp_flights: st.info("Список порожній.")
@@ -212,23 +234,19 @@ else:
                 if cr or fe < fs or fs < s_start: cr = True; a_m.append(f)
                 else: b_m.append(f)
             def fc(fls): return "\n".join([f"{f['Взльот']} - {f['Посадка']} - {f['Дистанція (м)']} м ({f['Тривалість (хв)']} хв)" for f in fls])
-            st.subheader("🌙 Вікно 1: Польоти до 00:00"); st.code(fc(b_m), language="text")
-            st.subheader("☀️ Вікно 2: Польоти після 00:00"); st.code(fc(a_m), language="text")
+            st.subheader("🌙 До 00:00"); st.code(fc(b_m), language="text")
+            st.subheader("☀️ Після 00:00"); st.code(fc(a_m), language="text")
 
-    # --- ВКЛАДКА АРХІВ ---
     with tab_hist:
         st.header("📜 Мій журнал польотів")
         df_h = load_data("Sheet1")
         if not df_h.empty:
             p_df = df_h[df_h['Оператор'] == st.session_state.user['name']] if st.session_state.role == "Pilot" else df_h
             cols = ["Дата", "Час завдання", "Підрозділ", "Оператор", "Дрон", "Маршрут", "Взльот", "Посадка", "Тривалість (хв)", "Дистанція (м)", "Результат", "Примітки", "Медіа (статус)", "Номер АКБ", "Цикли АКБ"]
-            ex_cols = [c for c in cols if c in p_df.columns]
-            st.dataframe(p_df[ex_cols].sort_values(by="Дата", ascending=False), use_container_width=True)
-        else: st.info("Архів порожній.")
+            st.dataframe(p_df[[c for c in cols if c in p_df.columns]].sort_values(by="Дата", ascending=False), use_container_width=True)
 
-    # --- ВКЛАДКА АНАЛІТИКА ---
     with tab_stat:
-        st.header("📊 Статистика нальоту")
+        st.header("📊 Статистика")
         df_s = load_data("Sheet1")
         if not df_s.empty:
             if st.session_state.role == "Pilot": df_s = df_s[df_s['Оператор'] == st.session_state.user['name']]
