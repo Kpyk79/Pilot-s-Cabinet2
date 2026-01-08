@@ -9,7 +9,7 @@ import os
 from datetime import datetime, time
 
 # --- 1. КОНФІГУРАЦІЯ ТА СЕКРЕТИ ---
-st.set_page_config(page_title="UAV Pilot Cabinet v4.3", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="UAV Pilot Cabinet v4.4", layout="wide", page_icon="🛡️")
 
 def get_secret(key):
     val = st.secrets.get(key)
@@ -27,15 +27,39 @@ UNITS = ["впс Кодима", "віпс Шершенці", "віпс Загн�
 DRONES = ["DJI Mavic 3 Pro", "DJI Mavic 3E", "DJI Mavic 3T", "DJI Matrice 30T", "DJI Matrice 300", "Autel Evo Max 4T", "Skydio X2D", "Puma LE"]
 ADMIN_PASSWORD = "admin_secret"
 
-st.markdown("""
-    <style>
-    .main { background-color: #f8f9fa; }
-    .stButton>button { width: 100%; border-radius: 8px; background-color: #2b4231; color: white; height: 3.5em; font-weight: bold; }
-    .duration-box { background-color: #f1f3f5; padding: 10px; border-radius: 8px; text-align: center; border: 1px solid #dee2e6; color: #2b4231; }
-    </style>
-    """, unsafe_allow_html=True)
+# --- 3. ФУНКЦІЯ CALLBACK (РЯТУЄ ВІД ПОМИЛКИ) ---
+def add_flight_callback():
+    # 1. Capture values from session state before reset
+    # We access them via the 'key' we assigned to widgets
+    new_flight = {
+        "Дата": st.session_state.m_date_val.strftime("%d.%m.%Y"),
+        "Час завдання": f"{st.session_state.m_start_val.strftime('%H:%M')} - {st.session_state.m_end_val.strftime('%H:%M')}",
+        "Підрозділ": st.session_state.user['unit'],
+        "Оператор": st.session_state.user['name'],
+        "Дрон": st.session_state.user['drone'],
+        "Маршрут": st.session_state.m_route_val,
+        "Взльот": st.session_state.t_off.strftime("%H:%M"),
+        "Посадка": st.session_state.t_land.strftime("%H:%M"),
+        "Тривалість (хв)": calculate_duration(st.session_state.t_off, st.session_state.t_land),
+        "Дистанція (м)": st.session_state.f_dist,
+        "Номер АКБ": st.session_state.f_akb,
+        "Цикли АКБ": st.session_state.f_cyc,
+        "Результат": st.session_state.f_res,
+        "Примітки": st.session_state.f_note,
+        "files": st.session_state[f"uploader_{st.session_state.uploader_key}"]
+    }
+    
+    # 2. Add to the list
+    st.session_state.temp_flights.append(new_flight)
+    
+    # 3. RESET fields (This works inside callback!)
+    st.session_state.f_dist = 0
+    st.session_state.f_akb = ""
+    st.session_state.f_cyc = 0
+    st.session_state.f_note = ""
+    st.session_state.uploader_key += 1
 
-# --- 3. СЕРВІСИ ТЕЛЕГРАМ ---
+# --- 4. СЕРВІСИ ТЕЛЕГРАМ ТА DOCX ---
 def send_telegram_text(text):
     if not TG_TOKEN or not TG_CHAT_ID: return "❌ Помилка налаштувань"
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
@@ -53,7 +77,6 @@ def send_telegram_photo(file_obj, caption):
         return "✅ Фото надіслано" if r.json().get("ok") else f"❌ {r.json().get('description')}"
     except: return "❌ Помилка зв'язку"
 
-# --- 4. РОБОТА З ДАНИМИ ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def load_data():
@@ -62,39 +85,6 @@ def load_data():
         return df.dropna(how="all")
     except:
         return pd.DataFrame(columns=["Дата", "Час завдання", "Підрозділ", "Оператор", "Дрон", "Маршрут", "Взльот", "Посадка", "Тривалість (хв)", "Дистанція (м)", "Номер АКБ", "Цикли АКБ", "Результат", "Примітки", "Медіа (статус)"])
-
-def generate_docx(df_filtered, template_path):
-    if not os.path.exists(template_path):
-        return "ERROR_FILE_MISSING"
-    try:
-        doc = Document(template_path)
-        flights_summary = ""
-        for (pilot, drone), group in df_filtered.groupby(['Оператор', 'Дрон']):
-            details = ", ".join([f"{r['Взльот']}-{r['Посадка']} ({r['Дистанція (м)']}м)" for _, r in group.iterrows()])
-            flights_summary += f"{pilot} — {len(group)} польотів, {drone} ({details});\n"
-
-        replacements = {
-            "{{DATE}}": str(df_filtered['Дата'].iloc[0]),
-            "{{UNIT}}": str(df_filtered['Підрозділ'].iloc[0]),
-            "{{FLIGHTS_LIST}}": flights_summary,
-            "{{ROUTE}}": str(df_filtered['Маршрут'].iloc[0]),
-            "{{RESULTS}}": f"{df_filtered['Результат'].iloc[0]}. {df_filtered['Примітки'].iloc[0]}"
-        }
-        for paragraph in doc.paragraphs:
-            for key, value in replacements.items():
-                if key in paragraph.text:
-                    paragraph.text = paragraph.text.replace(key, value)
-        for table in doc.tables:
-            for row in table.rows:
-                for cell in row.cells:
-                    for key, value in replacements.items():
-                        if key in cell.text:
-                            cell.text = cell.text.replace(key, value)
-        buf = io.BytesIO()
-        doc.save(buf)
-        buf.seek(0)
-        return buf
-    except Exception: return None
 
 def calculate_duration(start, end):
     s, e = start.hour * 60 + start.minute, end.hour * 60 + end.minute
@@ -125,8 +115,6 @@ if not st.session_state.logged_in:
                 st.rerun()
 else:
     st.sidebar.markdown(f"**👤 {st.session_state.role}**")
-    if st.sidebar.button("🧪 Тест зв'язку з TG"):
-        st.sidebar.info(send_telegram_text("🔔 Тест зв'язку: ОК"))
     if st.sidebar.button("Вийти"):
         st.session_state.logged_in = False
         st.session_state.temp_flights = []
@@ -139,21 +127,20 @@ else:
             st.header("Внесення даних зміні")
             with st.container(border=True):
                 c1, c2, c3, c4 = st.columns(4)
-                m_date = c1.date_input("Дата завдання", datetime.now())
-                m_start = c2.time_input("Зміна з", value=time(8,0), step=60)
-                m_end = c3.time_input("Зміна до", value=time(20,0), step=60)
-                m_route = c4.text_input("Маршрут")
+                # Додаємо ключі і для полів зміни
+                m_date = c1.date_input("Дата завдання", datetime.now(), key="m_date_val")
+                m_start = c2.time_input("Зміна з", value=time(8,0), step=60, key="m_start_val")
+                m_end = c3.time_input("Зміна до", value=time(20,0), step=60, key="m_end_val")
+                m_route = c4.text_input("Маршрут", key="m_route_val")
 
             with st.expander("📝 Додати політ", expanded=True):
                 col1, col2, col3, col4 = st.columns(4)
-                # Використовуємо ключі для віджетів
                 t_off = col1.time_input("Взльот", value=time(9,0), step=60, key="t_off")
                 t_land = col2.time_input("Посадка", value=time(9,30), step=60, key="t_land")
                 f_dur = calculate_duration(t_off, t_land)
                 col3.markdown(f"<div class='duration-box'>⏳ <b>{f_dur} хв</b></div>", unsafe_allow_html=True)
                 f_dist = col4.number_input("Відстань (м)", min_value=0, step=10, key="f_dist")
                 
-                # Поля АКБ
                 cb1, cb2 = st.columns(2)
                 f_akb = cb1.text_input("Номер АКБ", placeholder="АКБ-05", key="f_akb")
                 f_cyc = cb2.number_input("Кількість циклів", min_value=0, step=1, key="f_cyc")
@@ -161,38 +148,10 @@ else:
                 f_res = st.selectbox("Результат", ["Без ознак порушення", "Затримання", "Виявлення цілі"], key="f_res")
                 f_note = st.text_area("Примітки", key="f_note")
                 
-                # Завантажувач файлів зі змінним ключем для скидання
                 f_imgs = st.file_uploader("📸 Скріншоти", accept_multiple_files=True, key=f"uploader_{st.session_state.uploader_key}")
 
-                if st.button("➕ Додати у список"):
-                    # Зберігаємо дані в список
-                    st.session_state.temp_flights.append({
-                        "Дата": m_date.strftime("%d.%m.%Y"),
-                        "Час завдання": f"{m_start.strftime('%H:%M')} - {m_end.strftime('%H:%M')}",
-                        "Підрозділ": st.session_state.user['unit'],
-                        "Оператор": st.session_state.user['name'],
-                        "Дрон": st.session_state.user['drone'],
-                        "Маршрут": m_route,
-                        "Взльот": t_off.strftime("%H:%M"),
-                        "Посадка": t_land.strftime("%H:%M"),
-                        "Тривалість (хв)": f_dur,
-                        "Дистанція (м)": f_dist,
-                        "Номер АКБ": f_akb,
-                        "Цикли АКБ": f_cyc,
-                        "Результат": f_res,
-                        "Примітки": f_note,
-                        "files": f_imgs
-                    })
-                    
-                    # СКИДАННЯ ПОЛІВ:
-                    st.session_state.f_dist = 0
-                    st.session_state.f_akb = ""
-                    st.session_state.f_cyc = 0
-                    st.session_state.f_note = ""
-                    # Зміна ключа завантажувача для його очищення
-                    st.session_state.uploader_key += 1
-                    
-                    st.rerun()
+                # Кнопка тепер використовує on_click
+                st.button("➕ Додати у список", on_click=add_flight_callback)
 
             if st.session_state.temp_flights:
                 st.write("---")
@@ -243,26 +202,3 @@ else:
                         st.success("Дані успішно відправлені!")
                         st.session_state.temp_flights = []
                         st.rerun()
-
-        with tab2:
-            st.header("📜 Донесення")
-            r_date = st.date_input("Оберіть дату для звіту", datetime.now())
-            df_full = load_data()
-            if not df_full.empty:
-                target_date = r_date.strftime("%d.%m.%Y")
-                filt = df_full[(df_full['Дата'] == target_date) & (df_full['Підрозділ'] == st.session_state.user['unit'])]
-                if not filt.empty:
-                    st.success(f"✅ Знайдено польотів: {len(filt)}")
-                    buf = generate_docx(filt, "Донесення_УПЗ.docx")
-                    if buf == "ERROR_FILE_MISSING": st.error("❌ Файл шаблону не знайдено.")
-                    elif buf: st.download_button("📥 Завантажити DOCX", buf, f"Report_{target_date}.docx")
-                else: st.warning(f"Даних за {target_date} не знайдено.")
-
-        with tab3:
-            st.header("📊 Аналітика")
-            df_full = load_data()
-            if not df_full.empty:
-                u_df = df_full[df_full['Підрозділ'] == st.session_state.user['unit']].copy()
-                if not u_df.empty:
-                    u_df['Тривалість (хв)'] = pd.to_numeric(u_df['Тривалість (хв)'], errors='coerce')
-                    st.plotly_chart(px.bar(u_df, x='Дата', y='Тривалість (хв)', color='Результат'), use_container_width=True)
