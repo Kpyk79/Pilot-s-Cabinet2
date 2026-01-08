@@ -8,7 +8,7 @@ import os
 from datetime import datetime, time, timedelta
 
 # --- 1. КОНФІГУРАЦІЯ ТА СЕКРЕТИ ---
-st.set_page_config(page_title="UAV Pilot Cabinet v5.9", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="UAV Pilot Cabinet v6.0", layout="wide", page_icon="🛡️")
 
 def get_secret(key):
     val = st.secrets.get(key)
@@ -48,7 +48,7 @@ def add_flight_callback():
         "Час завдання": f"{st.session_state.m_start_val.strftime('%H:%M')} - {st.session_state.m_end_val.strftime('%H:%M')}",
         "Підрозділ": st.session_state.user['unit'],
         "Оператор": st.session_state.user['name'],
-        "Дрон": st.session_state.user['drone'],
+        "Дрон": st.session_state.sel_drone_val, # Беремо з нового поля у вкладці Польоти
         "Маршрут": st.session_state.m_route_val,
         "Взльот": st.session_state.t_off.strftime("%H:%M"),
         "Посадка": st.session_state.t_land.strftime("%H:%M"),
@@ -74,7 +74,8 @@ def send_telegram_msg(all_fl):
     if not TG_TOKEN or not TG_CHAT_ID: return
     first = all_fl[0]
     flights_txt = "\n".join([f"{i+1}. {f['Взльот']}-{f['Посадка']} ({f['Тривалість (хв)']} хв)" for i, f in enumerate(all_fl)])
-    report = f"🚁 **Донесення: {first['Підрозділ']}**\n👤 **Пілот:** {first['Оператор']}\n📅 **Дата:** {first['Дата']}\n⏱ **Час завд.:** {first['Час завдання']}\n━━━━━━━━━━━━━━━\n🚀 **Вильоти:**\n{flights_txt}\n🎯 **Результат:** {first['Результат']}"
+    report = f"🚁 **Донесення: {first['Підрозділ']}**\n👤 **Пілот:** {first['Оператор']}\n📅 **Дата:** {first['Дата']}\n⏱ **Час завд.:** {first['Час завдання']}\n🛡 **БпЛА:** {first['Дрон']}\n━━━━━━━━━━━━━━━\n🚀 **Вильоти:**\n{flights_txt}\n🎯 **Результат:** {first['Результат']}"
+    
     media_sent = False
     for fl in all_fl:
         if fl.get('files'):
@@ -99,9 +100,10 @@ if not st.session_state.logged_in:
     role = st.radio("Режим:", ["Пілот", "Адміністратор"], horizontal=True)
     with st.container(border=True):
         if role == "Пілот":
-            u = st.selectbox("Підрозділ:", UNITS); n = st.text_input("Звання та Прізвище:"); d = st.selectbox("Дрон:", DRONES)
+            u = st.selectbox("Підрозділ:", UNITS); n = st.text_input("Звання та Прізвище:")
+            # ВИБІР БпЛА ПРИБРАНО ЗВІДСИ
             if st.button("Увійти") and n:
-                st.session_state.logged_in, st.session_state.role, st.session_state.user = True, "Pilot", {"unit": u, "name": n, "drone": d}
+                st.session_state.logged_in, st.session_state.role, st.session_state.user = True, "Pilot", {"unit": u, "name": n}
                 df_d = load_data("Drafts")
                 if not df_d.empty:
                     my_d = df_d[df_d['Оператор'] == n].to_dict('records')
@@ -110,8 +112,7 @@ if not st.session_state.logged_in:
         else:
             p = st.text_input("Пароль:", type="password")
             if st.button("Вхід") and p == ADMIN_PASSWORD:
-                st.session_state.logged_in, st.session_state.role = True, "Admin"
-                st.rerun()
+                st.session_state.logged_in, st.session_state.role = True, "Admin"; st.rerun()
 else:
     st.sidebar.markdown(f"👤 **{st.session_state.user['name'] if st.session_state.role=='Pilot' else 'Адмін'}**")
     if st.sidebar.button("Вийти"): st.session_state.logged_in = False; st.rerun()
@@ -125,7 +126,11 @@ else:
         st.header("📝 Формування заявки")
         with st.container(border=True):
             app_unit = st.selectbox("1. Заявник:", UNITS, index=UNITS.index(st.session_state.user['unit']) if st.session_state.user['unit'] in UNITS else 0)
-            app_drones = st.multiselect("2. Тип БпЛА:", DRONES, default=[st.session_state.user['drone']] if st.session_state.user['drone'] in DRONES else None)
+            
+            # Підтягуємо дрон з вкладки Польоти, якщо він там обраний
+            current_drone = st.session_state.get('sel_drone_val', DRONES[0])
+            app_drones = st.multiselect("2. Тип БпЛА:", DRONES, default=[current_drone] if current_drone in DRONES else None)
+            
             app_sn = st.text_input("s/n:", placeholder="s/n: 123, 456")
             app_dates = st.date_input("3. Дата здійснення польоту:", value=(datetime.now(), datetime.now() + timedelta(days=1)))
             app_t_f = st.time_input("4. Час роботи з:", value=time(8,0)); app_t_t = st.time_input("до:", value=time(20,0))
@@ -143,13 +148,18 @@ else:
     # --- ВКЛАДКА ПОЛЬОТИ ---
     with tab_f:
         st.header("Внесення даних зміні")
+        # 1. Дані польотного завдання
         with st.container(border=True):
             c1, c2, c3, c4 = st.columns(4)
             m_date = c1.date_input("Дата завдання", datetime.now(), key="m_date_val")
             m_start = c2.time_input("Зміна з", value=time(8,0), step=60, key="m_start_val")
             m_end = c3.time_input("Зміна до", value=time(20,0), step=60, key="m_end_val")
             m_route = c4.text_input("Маршрут", key="m_route_val")
+            
+            # НОВЕ: Вибір БпЛА перенесено сюди (після маршруту)
+            st.selectbox("🛡️ Оберіть БпЛА на зміну:", DRONES, key="sel_drone_val")
 
+        # 2. Додавання конкретного вильоту
         with st.expander("📝 Додати новий виліт", expanded=True):
             col1, col2, col3, col4 = st.columns(4)
             t_o = col1.time_input("Взльот", value=time(9,0), step=60, key="t_off")
@@ -194,68 +204,40 @@ else:
     # --- ВКЛАДКА ЦУС ---
     with tab_cus:
         st.header("📡 Дані для ЦУС")
-        if not st.session_state.temp_flights:
-            st.info("Додайте польоти у вкладці '🚀 Польоти', щоб сформувати дані.")
+        if not st.session_state.temp_flights: st.info("Додайте польоти.")
         else:
             all_f = st.session_state.temp_flights
             shift_start_t = st.session_state.m_start_val
             before_m, after_m, crossed = [], [], False
             for f in all_f:
-                f_start = datetime.strptime(f['Взльот'], "%H:%M").time()
-                f_end = datetime.strptime(f['Посадка'], "%H:%M").time()
-                if crossed or f_end < f_start or f_start < shift_start_t:
+                f_s = datetime.strptime(f['Взльот'], "%H:%M").time()
+                f_e = datetime.strptime(f['Посадка'], "%H:%M").time()
+                if crossed or f_e < f_s or f_s < shift_start_t:
                     crossed = True; after_m.append(f)
                 else: before_m.append(f)
-            
-            def format_cus(flights):
-                return "\n".join([f"{f['Взльот']} - {f['Посадка']} - {f['Дистанція (м)']} м ({f['Тривалість (хв)']} хв)" for f in flights])
-            
-            st.subheader("🌙 Вікно 1: Польоти до 00:00")
-            txt_b = format_cus(before_m)
-            if txt_b: st.code(txt_b, language="text")
-            else: st.write("Немає записів")
-            st.subheader("☀️ Вікно 2: Польоти після 00:00")
-            txt_a = format_cus(after_m)
-            if txt_a: st.code(txt_a, language="text")
-            else: st.write("Немає записів")
+            def fmt_cus(fls): return "\n".join([f"{f['Взльот']} - {f['Посадка']} - {f['Дистанція (м)']} м ({f['Тривалість (хв)']} хв)" for f in fls])
+            st.subheader("🌙 До 00:00"); st.code(fmt_cus(before_m), language="text")
+            st.subheader("☀️ Після 00:00"); st.code(fmt_cus(after_m), language="text")
 
-    # --- ВКЛАДКА АРХІВ (ОНОВЛЕНО КОЛОНКИ) ---
+    # --- ВКЛАДКА АРХІВ ---
     with tab_hist:
         st.header("📜 Мій журнал польотів")
         df_hist = load_data("Sheet1")
         if not df_hist.empty:
             personal_df = df_hist[df_hist['Оператор'] == st.session_state.user['name']] if st.session_state.role == "Pilot" else df_hist
-            
-            # ВИЗНАЧАЄМО СПИСОК КОЛОНОК ЗГІДНО ЗАПИТУ
-            archive_cols = [
-                "Дата", "Час завдання", "Підрозділ", "Оператор", "Дрон", "Маршрут", 
-                "Взльот", "Посадка", "Тривалість (хв)", "Дистанція (м)", "Результат", 
-                "Примітки", "Медіа (статус)", "Номер АКБ", "Цикли АКБ"
-            ]
-            
-            # Фільтруємо лише існуючі в базі колонки для безпеки
-            existing_archive_cols = [c for c in archive_cols if c in personal_df.columns]
-            
-            st.dataframe(personal_df[existing_archive_cols].sort_values(by="Дата", ascending=False), use_container_width=True)
-        else:
-            st.info("Архів порожній.")
+            archive_cols = ["Дата", "Час завдання", "Підрозділ", "Оператор", "Дрон", "Маршрут", "Взльот", "Посадка", "Тривалість (хв)", "Дистанція (м)", "Результат", "Примітки", "Медіа (статус)", "Номер АКБ", "Цикли АКБ"]
+            existing_cols = [c for c in archive_cols if c in personal_df.columns]
+            st.dataframe(personal_df[existing_cols].sort_values(by="Дата", ascending=False), use_container_width=True)
 
     # --- ВКЛАДКА АНАЛІТИКА ---
     with tab_stat:
-        st.header("📊 Статистика нальоту")
+        st.header("📊 Статистика")
         df_st = load_data("Sheet1")
         if not df_st.empty:
             if st.session_state.role == "Pilot": df_st = df_st[df_st['Оператор'] == st.session_state.user['name']]
-            if not df_st.empty:
-                df_st['Дата_dt'] = pd.to_datetime(df_st['Дата'], format='%d.%m.%Y', errors='coerce')
-                df_st['Month_num'] = df_st['Дата_dt'].dt.month
-                df_st['Year_num'] = df_st['Дата_dt'].dt.year
-                res = df_st.groupby(['Year_num', 'Month_num']).agg(
-                    Польоти=('Дата', 'count'), 
-                    Затримання=('Результат', lambda x: (x == "Затримання").sum()), 
-                    Хв=('Тривалість (хв)', 'sum')
-                ).reset_index()
-                res['📅 Місяць'] = res.apply(lambda x: f"{UKR_MONTHS[int(x['Month_num'])]} {int(x['Year_num'])}", axis=1)
-                res['⏱ Наліт (ГГ:ХХ)'] = res['Хв'].apply(format_to_time_str)
-                res = res.sort_values(by=['Year_num', 'Month_num'], ascending=False)
-                st.table(res[['📅 Місяць', 'Польоти', 'Затримання', '⏱ Наліт (ГГ:ХХ)']])
+            df_st['Дата_dt'] = pd.to_datetime(df_st['Дата'], format='%d.%m.%Y', errors='coerce')
+            df_st['Month_num'] = df_st['Дата_dt'].dt.month; df_st['Year_num'] = df_st['Дата_dt'].dt.year
+            res = df_st.groupby(['Year_num', 'Month_num']).agg(Польоти=('Дата', 'count'), Затримання=('Результат', lambda x: (x == "Затримання").sum()), Хв=('Тривалість (хв)', 'sum')).reset_index()
+            res['📅 Місяць'] = res.apply(lambda x: f"{UKR_MONTHS[int(x['Month_num'])]} {int(x['Year_num'])}", axis=1)
+            res['⏱ Наліт (ГГ:ХХ)'] = res['Хв'].apply(format_to_time_str)
+            st.table(res.sort_values(by=['Year_num', 'Month_num'], ascending=False)[['📅 Місяць', 'Польоти', 'Затримання', '⏱ Наліт (ГГ:ХХ)']])
