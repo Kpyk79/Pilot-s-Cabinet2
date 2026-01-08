@@ -8,7 +8,7 @@ import os
 from datetime import datetime, time, timedelta
 
 # --- 1. КОНФІГУРАЦІЯ ТА СЕКРЕТИ ---
-st.set_page_config(page_title="UAV Pilot Cabinet v5.7", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="UAV Pilot Cabinet v5.8", layout="wide", page_icon="🛡️")
 
 def get_secret(key):
     val = st.secrets.get(key)
@@ -23,6 +23,12 @@ TG_CHAT_ID = get_secret("TELEGRAM_CHAT_ID")
 UNITS = ["впс Окни", "впс Кодима", "віпс Шершенці", "віпс Загнітків", "впс Станіславка", "віпс Тимкове", "віпс Чорна", "віпс Ткаченкове", "віпс Гандрабури", "віпс Новосеменівка", "впс Великокомарівка", "віпс Павлівка", "впс Велика Михайлівка", "віпс Слов'яносербка", "віпс Гребеники", "впс Степанівка", "віпс Кучурган", "віпс Лиманське", "віпс Лучинське", "УПЗ"]
 DRONES = ["DJI Mavic 3 Pro", "DJI Mavic 3E", "DJI Mavic 3T", "DJI Matrice 30T", "DJI Matrice 300", "Autel Evo Max 4T", "Skydio X2D", "Puma LE"]
 ADMIN_PASSWORD = "admin_secret"
+
+UKR_MONTHS = {
+    1: "січень", 2: "лютий", 3: "березень", 4: "квітень",
+    5: "травень", 6: "червень", 7: "липень", 8: "серпень",
+    9: "вересень", 10: "жовтень", 11: "листопад", 12: "грудень"
+}
 
 # --- 3. ДОПОМІЖНІ ФУНКЦІЇ ---
 def calculate_duration(start, end):
@@ -158,9 +164,9 @@ else:
             st.button("➕ Додати у список", on_click=add_flight_callback)
 
         if st.session_state.temp_flights:
+            st.write("---")
             st.subheader("📋 Список польотів (чернетка)")
             df_temp = pd.DataFrame(st.session_state.temp_flights)
-            # ОНОВЛЕНО: ДОДАНО ЦИКЛИ АКБ В ТАБЛИЦЮ ЧЕРНЕТКИ
             cols_show = ["Взльот", "Посадка", "Дистанція (м)", "Тривалість (хв)", "Номер АКБ", "Цикли АКБ"]
             df_v = df_temp[cols_show]
             df_v.columns = ["Зліт", "Посадка", "Відстань", "Хв", "№ АКБ", "Цикли"]
@@ -172,7 +178,7 @@ else:
                 df_d = load_data("Drafts")
                 df_d = df_d[df_d['Оператор'] != st.session_state.user['name']]
                 conn.update(worksheet="Drafts", data=pd.concat([df_d, pd.DataFrame(st.session_state.temp_flights).drop(columns=['files'], errors='ignore')], ignore_index=True))
-                st.success("💾 Чернетка збережена!")
+                st.success("💾 Збережено!")
             if c_b3.button("🚀 ВІДПРАВИТИ ВСІ ДАНІ"):
                 with st.spinner("Відправка..."):
                     all_fl = st.session_state.temp_flights; send_telegram_msg(all_fl)
@@ -208,7 +214,6 @@ else:
             txt_b = format_cus(before_m)
             if txt_b: st.code(txt_b, language="text")
             else: st.write("Немає записів")
-                
             st.subheader("☀️ Вікно 2: Польоти після 00:00")
             txt_a = format_cus(after_m)
             if txt_a: st.code(txt_a, language="text")
@@ -222,7 +227,7 @@ else:
             personal_df = df_hist[df_hist['Оператор'] == st.session_state.user['name']] if st.session_state.role == "Pilot" else df_hist
             st.dataframe(personal_df.sort_values(by="Дата", ascending=False), use_container_width=True)
 
-    # --- ВКЛАДКА АНАЛІТИКА ---
+    # --- ВКЛАДКА АНАЛІТИКА (ОНОВЛЕНО ФОРМАТ) ---
     with tab_stat:
         st.header("📊 Статистика")
         df_st = load_data("Sheet1")
@@ -230,7 +235,21 @@ else:
             if st.session_state.role == "Pilot": df_st = df_st[df_st['Оператор'] == st.session_state.user['name']]
             if not df_st.empty:
                 df_st['Дата_dt'] = pd.to_datetime(df_st['Дата'], format='%d.%m.%Y', errors='coerce')
-                df_st['Місяць'] = df_st['Дата_dt'].dt.strftime('%Y-%m')
-                res = df_st.groupby('Місяць').agg(Польоти=('Дата', 'count'), Затримання=('Результат', lambda x: (x == "Затримання").sum()), Хв=('Тривалість (хв)', 'sum')).reset_index()
-                res['Наліт (ГГ:ХХ)'] = res['Хв'].apply(format_to_time_str)
-                st.table(res[['Місяць', 'Польоти', 'Затримання', 'Наліт (ГГ:ХХ)']])
+                df_st['Month_num'] = df_st['Дата_dt'].dt.month
+                df_st['Year_num'] = df_st['Дата_dt'].dt.year
+                
+                # Групуємо за роком та номером місяця для правильного сортування
+                res = df_st.groupby(['Year_num', 'Month_num']).agg(
+                    Польоти=('Дата', 'count'), 
+                    Затримання=('Результат', lambda x: (x == "Затримання").sum()), 
+                    Хв=('Тривалість (хв)', 'sum')
+                ).reset_index()
+                
+                # Формуємо красиву українську назву
+                res['📅 Місяць'] = res.apply(lambda x: f"{UKR_MONTHS[int(x['Month_num'])]} {int(x['Year_num'])}", axis=1)
+                res['⏱ Наліт (ГГ:ХХ)'] = res['Хв'].apply(format_to_time_str)
+                
+                # Сортуємо: нові місяці зверху
+                res = res.sort_values(by=['Year_num', 'Month_num'], ascending=False)
+                
+                st.table(res[['📅 Місяць', 'Польоти', 'Затримання', '⏱ Наліт (ГГ:ХХ)']])
