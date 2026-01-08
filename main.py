@@ -9,7 +9,7 @@ import os
 from datetime import datetime, time
 
 # --- 1. КОНФІГУРАЦІЯ ТА СЕКРЕТИ ---
-st.set_page_config(page_title="UAV Pilot Cabinet v4.0", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="UAV Pilot Cabinet v4.1", layout="wide", page_icon="🛡️")
 
 def get_secret(key):
     val = st.secrets.get(key)
@@ -61,7 +61,7 @@ def load_data():
         df = conn.read()
         return df.dropna(how="all")
     except:
-        return pd.DataFrame(columns=["Дата", "Час завдання", "Підрозділ", "Оператор", "Дрон", "Маршрут", "Взльот", "Посадка", "Тривалість (хв)", "Дистанція (м)", "Результат", "Примітки", "Медіа (статус)"])
+        return pd.DataFrame(columns=["Дата", "Час завдання", "Підрозділ", "Оператор", "Дрон", "Маршрут", "Взльот", "Посадка", "Тривалість (хв)", "Дистанція (м)", "Номер АКБ", "Цикли АКБ", "Результат", "Примітки", "Медіа (статус)"])
 
 def generate_docx(df_filtered, template_path):
     if not os.path.exists(template_path):
@@ -70,7 +70,7 @@ def generate_docx(df_filtered, template_path):
         doc = Document(template_path)
         flights_summary = ""
         for (pilot, drone), group in df_filtered.groupby(['Оператор', 'Дрон']):
-            details = ", ".join([f"{r['Взльот']}-{r['Посадка']} ({r['Дистанція (м)']}м)" for _, r in group.iterrows()])
+            details = ", ".join([f"{r['Взльот']}-{r['Посадка']} ({r['Дистанція (м)']}м, АКБ: {r['Номер АКБ']})" for _, r in group.iterrows()])
             flights_summary += f"{pilot} — {len(group)} польотів, {drone} ({details});\n"
 
         replacements = {
@@ -141,17 +141,24 @@ else:
             with st.container(border=True):
                 c1, c2, c3, c4 = st.columns(4)
                 m_date = c1.date_input("Дата завдання", datetime.now())
-                m_start = c2.time_input("Зміна з", value=time(8,0))
-                m_end = c3.time_input("Зміна до", value=time(20,0))
+                # Крок 60 дозволяє вибирати час з точністю до хвилини
+                m_start = c2.time_input("Зміна з", value=time(8,0), step=60)
+                m_end = c3.time_input("Зміна до", value=time(20,0), step=60)
                 m_route = c4.text_input("Маршрут")
 
             with st.expander("📝 Додати політ", expanded=True):
                 col1, col2, col3, col4 = st.columns(4)
-                t_off = col1.time_input("Взльот", value=time(9,0))
-                t_land = col2.time_input("Посадка", value=time(9,30))
+                t_off = col1.time_input("Взльот", value=time(9,0), step=60)
+                t_land = col2.time_input("Посадка", value=time(9,30), step=60)
                 f_dur = calculate_duration(t_off, t_land)
                 col3.info(f"⏳ {f_dur} хв")
-                f_dist = col4.number_input("Дистанція (м)", min_value=0)
+                f_dist = col4.number_input("Дистанція (м)", min_value=0, step=10)
+                
+                # Поля для АКБ
+                c_bat1, c_bat2 = st.columns(2)
+                f_bat_num = c_bat1.text_input("Номер АКБ", placeholder="Напр: АКБ-01")
+                f_bat_cycles = c_bat2.number_input("Кількість циклів", min_value=0, step=1)
+                
                 f_res = st.selectbox("Результат", ["Без ознак порушення", "Затримання", "Виявлення цілі"])
                 f_note = st.text_area("Примітки")
                 f_imgs = st.file_uploader("📸 Скріншоти", accept_multiple_files=True)
@@ -168,6 +175,8 @@ else:
                         "Посадка": t_land.strftime("%H:%M"),
                         "Тривалість (хв)": f_dur,
                         "Дистанція (м)": f_dist,
+                        "Номер АКБ": f_bat_num,
+                        "Цикли АКБ": f_bat_cycles,
                         "Результат": f_res,
                         "Примітки": f_note,
                         "files": f_imgs
@@ -176,15 +185,17 @@ else:
 
             if st.session_state.temp_flights:
                 st.subheader("📋 Вильоти у черзі")
-                df_view = pd.DataFrame(st.session_state.temp_flights)[["Взльот", "Посадка", "Тривалість (хв)", "Дистанція (м)"]]
-                df_view.columns = ["Зліт", "Посадка", "Тривалість", "Дистанція"]
+                # Додано нові стовпці АКБ в таблицю відображення
+                df_view = pd.DataFrame(st.session_state.temp_flights)[["Взльот", "Посадка", "Тривалість (хв)", "Дистанція (м)", "Номер АКБ", "Цикли АКБ"]]
+                df_view.columns = ["Зліт", "Посадка", "Тривалість", "Дистанція", "№ АКБ", "Цикли"]
                 st.dataframe(df_view, use_container_width=True)
                 
                 if st.button("🚀 ВІДПРАВИТИ ВСІ ДАНІ"):
                     with st.spinner("Відправка звіту..."):
                         all_fl = st.session_state.temp_flights
                         first = all_fl[0]
-                        flights_list = "\n".join([f"{i+1}. {f['Взльот']}-{f['Посадка']} ({f['Тривалість (хв)']} хв)" for i, f in enumerate(all_fl)])
+                        # У списку вильотів для Telegram тепер видно АКБ
+                        flights_list = "\n".join([f"{i+1}. {f['Взльот']}-{f['Посадка']} ({f['Тривалість (хв)']} хв, АКБ: {f['Номер АКБ']})" for i, f in enumerate(all_fl)])
                         total_min = sum([f['Тривалість (хв)'] for f in all_fl])
 
                         report = (
@@ -241,7 +252,7 @@ else:
             df_stat = load_data()
             if not df_stat.empty:
                 u_df = df_stat[df_stat['Підрозділ'] == st.session_state.user['unit']].copy()
-                if not u_df.empty: # ТУТ ВИПРАВЛЕНО (додано ':')
+                if not u_df.empty:
                     u_df['Тривалість (хв)'] = pd.to_numeric(u_df['Тривалість (хв)'], errors='coerce')
                     st.plotly_chart(px.bar(u_df, x='Дата', y='Тривалість (хв)', color='Результат', title="Наліт підрозділу"), use_container_width=True)
                 else: st.info("Ваших даних ще немає.")
