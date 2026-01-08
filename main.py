@@ -8,7 +8,7 @@ import os
 from datetime import datetime, time, timedelta
 
 # --- 1. КОНФІГУРАЦІЯ ТА СЕКРЕТИ ---
-st.set_page_config(page_title="UAV Pilot Cabinet v5.4", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="UAV Pilot Cabinet v5.5", layout="wide", page_icon="🛡️")
 
 def get_secret(key):
     val = st.secrets.get(key)
@@ -67,14 +67,16 @@ def load_data(ws="Sheet1"):
 def send_telegram_msg(all_fl):
     if not TG_TOKEN or not TG_CHAT_ID: return
     first = all_fl[0]
-    flights_txt = "\n".join([f"{i+1}. {f['Взльот']}-{f['Посадка']} ({f['Тривалість (хв)']} хв)" for i, f in enumerate(all_fl)])
+    flights_txt = "\n".join([f"{i+1}. {f['Взльот']}-{f['Посадка']} ({f['Тривалість (хв)']} хв, АКБ: {f['Номер АКБ']})" for i, f in enumerate(all_fl)])
     report = f"🚁 **Донесення: {first['Підрозділ']}**\n👤 **Пілот:** {first['Оператор']}\n📅 **Дата:** {first['Дата']}\n⏱ **Час завд.:** {first['Час завдання']}\n━━━━━━━━━━━━━━━\n🚀 **Вильоти:**\n{flights_txt}\n🎯 **Результат:** {first['Результат']}"
+    
     media_sent = False
     for fl in all_fl:
         if fl.get('files'):
             for img in fl['files']:
                 url = f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto"
-                requests.post(url, files={'photo': (img.name, img.getvalue(), img.type)}, data={'chat_id': str(TG_CHAT_ID), 'caption': report, 'parse_mode': 'Markdown'}, timeout=60)
+                requests.post(url, files={'photo': (img.name, img.getvalue(), img.type)}, 
+                              data={'chat_id': str(TG_CHAT_ID), 'caption': report, 'parse_mode': 'Markdown'}, timeout=60)
             media_sent = True
     if not media_sent:
         url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
@@ -110,66 +112,46 @@ else:
     st.sidebar.markdown(f"👤 **{st.session_state.user['name'] if st.session_state.role=='Pilot' else 'Адмін'}**")
     if st.sidebar.button("Вийти"): st.session_state.logged_in = False; st.rerun()
 
-    # СТВОРЕННЯ ВКЛАДОК (Заявка тепер перша)
-    tab_app, tab1, tab2, tab3 = st.tabs(["📋 Заявка на політ", "🚀 Польоти", "📜 Архів та Звіти", "📊 Аналітика"])
+    # СТВОРЕННЯ ВКЛАДОК (Додано вкладку ЦУС)
+    tab_app, tab_f, tab_cus, tab_hist, tab_stat = st.tabs([
+        "📋 Заявка на політ", 
+        "🚀 Польоти", 
+        "📡 Польоти на ЦУС",
+        "📜 Архів та Звіти", 
+        "📊 Аналітика"
+    ])
 
     # --- ВКЛАДКА ЗАЯВКА ---
     with tab_app:
         st.header("📝 Формування заявки на політ")
         with st.container(border=True):
             app_unit = st.selectbox("1. Заявник (підрозділ):", UNITS, index=UNITS.index(st.session_state.user['unit']) if st.session_state.user['unit'] in UNITS else 0)
-            
             col_drone1, col_drone2 = st.columns([2, 1])
             app_drones = col_drone1.multiselect("2. Тип БпЛА:", DRONES, default=[st.session_state.user['drone']] if st.session_state.user['drone'] in DRONES else None)
             app_sn = col_drone2.text_input("s/n (через кому):", placeholder="s/n: 123, 456")
-            
             app_dates = st.date_input("3. Дата здійснення польоту (період):", value=(datetime.now(), datetime.now() + timedelta(days=1)))
-            
             col_t1, col_t2 = st.columns(2)
             app_time_from = col_t1.time_input("4. Час роботи з:", value=time(8,0), step=60)
             app_time_to = col_t2.time_input("Час роботи до:", value=time(20,0), step=60)
-            
-            app_route = st.text_area("5. Населений пункт (маршрут):", placeholder="Вкажіть район або н.п.")
-            
+            app_route = st.text_area("5. Населений пункт (маршрут):")
             col_h1, col_h2 = st.columns(2)
             app_height = col_h1.text_input("6. Висота роботи (м):", value="до 500 м")
             app_radius = col_h2.text_input("7. Радіус роботи (км):", value="до 5 км")
-            
             app_purpose = st.selectbox("8. Мета польоту:", ["патрулювання ділянки відповідальності", "за оперативною необхідністю", "навчально-тренувальні польоти"])
-            
             app_contact = st.text_input("9. Контактна особа (Прізвище/Позивний + тел):", value=f"{st.session_state.user['name']}, тел: ")
 
         if st.button("✨ Сформувати текст заявки"):
-            # Форматування списку БпЛА з s/n
             drones_str = ", ".join(app_drones)
             if app_sn: drones_str += f" ({app_sn})"
-            
-            # Форматування дат
             if isinstance(app_dates, tuple) and len(app_dates) == 2:
                 date_str = f"з {app_dates[0].strftime('%d.%m.%Y')} по {app_dates[1].strftime('%d.%m.%Y')}"
-            else:
-                date_str = app_dates[0].strftime('%d.%m.%Y') if isinstance(app_dates, tuple) else app_dates.strftime('%d.%m.%Y')
-
-            # Побудова фінального тексту
-            final_app_text = (
-                f"ЗАЯВКА НА ПОЛІТ\n"
-                f"1. Заявник: в/ч 2196 ({app_unit})\n"
-                f"2. Тип БпЛА: {drones_str}\n"
-                f"3. Дата здійснення польоту: {date_str}\n"
-                f"4. Час роботи: з {app_time_from.strftime('%H:%M')} по {app_time_to.strftime('%H:%M')}\n"
-                f"5. Населений пункт (маршрут): {app_route}\n"
-                f"6. Висота роботи (м): {app_height}\n"
-                f"7. Радіус роботи (км): {app_radius}\n"
-                f"8. Мета польоту: {app_purpose}\n"
-                f"9. Контактна особа: {app_contact}"
-            )
+            else: date_str = app_dates[0].strftime('%d.%m.%Y') if isinstance(app_dates, tuple) else app_dates.strftime('%d.%m.%Y')
             
-            st.subheader("📋 Готовий текст:")
+            final_app_text = f"ЗАЯВКА НА ПОЛІТ\n1. Заявник: в/ч 2196 ({app_unit})\n2. Тип БпЛА: {drones_str}\n3. Дата здійснення польоту: {date_str}\n4. Час роботи: з {app_time_from.strftime('%H:%M')} по {app_time_to.strftime('%H:%M')}\n5. Населений пункт (маршрут): {app_route}\n6. Висота роботи (м): {app_height}\n7. Радіус роботи (км): {app_radius}\n8. Мета польоту: {app_purpose}\n9. Контактна особа: {app_contact}"
             st.code(final_app_text, language="text")
-            st.info("⬆️ Натисніть кнопку копіювання у правому верхньому куті вікна з текстом вище.")
 
-    # --- ВКЛАДКА ПОЛЬОТИ (Залишена без змін) ---
-    with tab1:
+    # --- ВКЛАДКА ПОЛЬОТИ ---
+    with tab_f:
         st.header("Внесення даних зміні")
         with st.container(border=True):
             c1, c2, c3, c4 = st.columns(4)
@@ -192,14 +174,11 @@ else:
             st.button("➕ Додати у список", on_click=add_flight_callback)
 
         if st.session_state.temp_flights:
-            st.write("---")
             st.subheader("📋 Список польотів (чернетка)")
             df_temp = pd.DataFrame(st.session_state.temp_flights)
-            cols_to_show = ["Взльот", "Посадка", "Дистанція (м)", "Тривалість (хв)", "Номер АКБ", "Цикли АКБ"]
-            df_v = df_temp[cols_to_show]
-            df_v.columns = ["Зліт", "Посадка", "Відстань", "Хв", "№ АКБ", "Цикли"]
+            cols_show = ["Взльот", "Посадка", "Дистанція (м)", "Тривалість (хв)", "Номер АКБ"]
+            df_v = df_temp[cols_show]; df_v.columns = ["Зліт", "Посадка", "Відстань", "Хв", "№ АКБ"]
             st.dataframe(df_v, use_container_width=True)
-            
             c_b1, c_b2, c_b3 = st.columns(3)
             if c_b1.button("🗑️ Видалити останній"): st.session_state.temp_flights.pop(); st.rerun()
             if c_b2.button("💾 Зберегти в Хмару"):
@@ -220,8 +199,36 @@ else:
                     df_d = load_data("Drafts"); conn.update(worksheet="Drafts", data=df_d[df_d['Оператор'] != st.session_state.user['name']])
                     st.success("✅ Надіслано!"); st.session_state.temp_flights = []; st.rerun()
 
+    # --- ВКЛАДКА ПОЛЬОТИ НА ЦУС (НОВА) ---
+    with tab_cus:
+        st.header("📡 Дані для ЦУС")
+        if not st.session_state.temp_flights:
+            st.info("Додайте польоти у вкладці '🚀 Польоти', щоб сформувати дані.")
+        else:
+            all_f = st.session_state.temp_flights
+            base_date = all_f[0]['Дата']
+            
+            before_midnight = [f for f in all_f if f['Дата'] == base_date]
+            after_midnight = [f for f in all_f if f['Дата'] != base_date]
+            
+            def format_cus(flights):
+                lines = []
+                for f in flights:
+                    lines.append(f"{f['Взльот']} - {f['Посадка']} - {f['Дистанція (м)']} м ({f['Тривалість (хв)']} хв)")
+                return "\n".join(lines)
+            
+            st.subheader("🌙 Вікно 1: Польоти до 00:00")
+            txt_before = format_cus(before_midnight)
+            if txt_before: st.code(txt_before, language="text")
+            else: st.write("Немає записів")
+                
+            st.subheader("☀️ Вікно 2: Польоти після 00:00")
+            txt_after = format_cus(after_midnight)
+            if txt_after: st.code(txt_after, language="text")
+            else: st.write("Немає записів")
+
     # --- ВКЛАДКА АРХІВ ---
-    with tab2:
+    with tab_hist:
         st.header("📜 Мій журнал польотів")
         df_hist = load_data("Sheet1")
         if not df_hist.empty:
@@ -234,8 +241,8 @@ else:
         else: st.info("Архів порожній.")
 
     # --- ВКЛАДКА АНАЛІТИКА ---
-    with tab3:
-        st.header("📊 Статистика нальоту по місяцях")
+    with tab_stat:
+        st.header("📊 Статистика по місяцях")
         df_st = load_data("Sheet1")
         if not df_st.empty:
             if st.session_state.role == "Pilot":
