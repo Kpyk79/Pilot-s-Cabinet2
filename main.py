@@ -8,7 +8,7 @@ import os
 from datetime import datetime, time
 
 # --- 1. КОНФІГУРАЦІЯ ТА СЕКРЕТИ ---
-st.set_page_config(page_title="UAV Pilot Cabinet v5.2", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="UAV Pilot Cabinet v5.3", layout="wide", page_icon="🛡️")
 
 def get_secret(key):
     val = st.secrets.get(key)
@@ -29,6 +29,12 @@ def calculate_duration(start, end):
     s, e = start.hour * 60 + start.minute, end.hour * 60 + end.minute
     d = e - s
     return d if d >= 0 else d + 1440
+
+def format_to_time_str(total_minutes):
+    """Конвертує хвилини у формат ГГ:ХХ"""
+    hours = total_minutes // 60
+    minutes = total_minutes % 60
+    return f"{int(hours):02d}:{int(minutes):02d}"
 
 def add_flight_callback():
     dur = calculate_duration(st.session_state.t_off, st.session_state.t_land)
@@ -56,24 +62,32 @@ def add_flight_callback():
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def load_data(ws="Sheet1"):
-    try:
-        # ttl=0 забезпечує миттєве оновлення даних без кешу
-        return conn.read(worksheet=ws, ttl=0).dropna(how="all")
-    except:
-        return pd.DataFrame()
+    try: return conn.read(worksheet=ws, ttl=0).dropna(how="all")
+    except: return pd.DataFrame()
 
 def send_telegram_msg(all_fl):
     if not TG_TOKEN or not TG_CHAT_ID: return
     first = all_fl[0]
     flights_txt = "\n".join([f"{i+1}. {f['Взльот']}-{f['Посадка']} ({f['Тривалість (хв)']} хв, АКБ: {f['Номер АКБ']})" for i, f in enumerate(all_fl)])
-    report = f"🚁 **Донесення: {first['Підрозділ']}**\n👤 **Пілот:** {first['Оператор']}\n📅 **Дата:** {first['Дата']}\n━━━━━━━━━━━━━━━\n🚀 **Вильоти:**\n{flights_txt}\n🎯 **Результат:** {first['Результат']}"
+    
+    # ОНОВЛЕНО: Додано Час польотного завдання
+    report = (
+        f"🚁 **Донесення: {first['Підрозділ']}**\n"
+        f"👤 **Пілот:** {first['Оператор']}\n"
+        f"📅 **Дата:** {first['Дата']}\n"
+        f"⏱ **Час завд.:** {first['Час завдання']}\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"🚀 **Вильоти:**\n{flights_txt}\n"
+        f"🎯 **Результат:** {first['Результат']}"
+    )
     
     media_sent = False
     for fl in all_fl:
         if fl.get('files'):
             for img in fl['files']:
                 url = f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto"
-                requests.post(url, files={'photo': (img.name, img.getvalue(), img.type)}, data={'chat_id': str(TG_CHAT_ID), 'caption': report, 'parse_mode': 'Markdown'}, timeout=60)
+                requests.post(url, files={'photo': (img.name, img.getvalue(), img.type)}, 
+                              data={'chat_id': str(TG_CHAT_ID), 'caption': report, 'parse_mode': 'Markdown'}, timeout=60)
             media_sent = True
     if not media_sent:
         url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
@@ -137,8 +151,6 @@ else:
             st.write("---")
             st.subheader("📋 Список польотів (чернетка)")
             df_temp = pd.DataFrame(st.session_state.temp_flights)
-            
-            # ОНОВЛЕНІ СТОВПЦІ: ВІДСТАНЬ ПІСЛЯ ПОСАДКИ
             cols_to_show = ["Взльот", "Посадка", "Дистанція (м)", "Тривалість (хв)", "Номер АКБ", "Цикли АКБ"]
             df_v = df_temp[cols_to_show]
             df_v.columns = ["Зліт", "Посадка", "Відстань", "Хв", "№ АКБ", "Цикли"]
@@ -146,31 +158,23 @@ else:
             
             c_b1, c_b2, c_b3 = st.columns(3)
             if c_b1.button("🗑️ Видалити останній"): st.session_state.temp_flights.pop(); st.rerun()
-            
             if c_b2.button("💾 Зберегти в Хмару"):
                 df_d = load_data("Drafts")
                 df_d = df_d[df_d['Оператор'] != st.session_state.user['name']]
-                new_d = pd.DataFrame(st.session_state.temp_flights).drop(columns=['files'], errors='ignore')
-                conn.update(worksheet="Drafts", data=pd.concat([df_d, new_d], ignore_index=True))
-                st.success("💾 Чернетка збережена!")
-
+                conn.update(worksheet="Drafts", data=pd.concat([df_d, pd.DataFrame(st.session_state.temp_flights).drop(columns=['files'], errors='ignore')], ignore_index=True))
+                st.success("💾 Збережено!")
             if c_b3.button("🚀 ВІДПРАВИТИ ВСІ ДАНІ"):
                 with st.spinner("Збереження та відправка..."):
                     all_fl = st.session_state.temp_flights
                     send_telegram_msg(all_fl)
-                    
                     final_to_db = []
                     for f in all_fl:
                         row = f.copy(); row.pop('files', None); row["Медіа (статус)"] = "З фото" if f.get('files') else "Текст"
                         final_to_db.append(row)
-                    
                     db_main = load_data("Sheet1")
-                    updated_db = pd.concat([db_main, pd.DataFrame(final_to_db)], ignore_index=True)
-                    conn.update(worksheet="Sheet1", data=updated_db)
-                    
-                    df_d = load_data("Drafts")
-                    conn.update(worksheet="Drafts", data=df_d[df_d['Оператор'] != st.session_state.user['name']])
-                    st.success("✅ Дані успішно занесено в архів!"); st.session_state.temp_flights = []; st.rerun()
+                    conn.update(worksheet="Sheet1", data=pd.concat([db_main, pd.DataFrame(final_to_db)], ignore_index=True))
+                    df_d = load_data("Drafts"); conn.update(worksheet="Drafts", data=df_d[df_d['Оператор'] != st.session_state.user['name']])
+                    st.success("✅ Надіслано!"); st.session_state.temp_flights = []; st.rerun()
 
     with tab2:
         st.header("📜 Мій журнал польотів")
@@ -178,14 +182,11 @@ else:
         if not df_hist.empty:
             if st.session_state.role == "Pilot":
                 personal_df = df_hist[df_hist['Оператор'] == st.session_state.user['name']]
-                st.info(f"Відображено ваші польоти ({len(personal_df)} записів)")
             else:
-                u_filter = st.selectbox("Оберіть підрозділ для перегляду:", ["Всі"] + UNITS)
-                personal_df = df_hist if u_filter == "Всі" else df_hist[df_hist['Підрозділ'] == u_filter]
-
+                u_f = st.selectbox("Підрозділ:", ["Всі"] + UNITS)
+                personal_df = df_hist if u_f == "Всі" else df_hist[df_hist['Підрозділ'] == u_f]
             st.dataframe(personal_df.sort_values(by="Дата", ascending=False), use_container_width=True)
-        else:
-            st.info("Архів порожній.")
+        else: st.info("Архів порожній.")
 
     with tab3:
         st.header("📊 Статистика нальоту по місяцях")
@@ -204,10 +205,10 @@ else:
                     Хвилини=('Тривалість (хв)', 'sum')
                 ).reset_index()
                 
-                # ОНОВЛЕННЯ: РАХУЄМО В ХВИЛИНАХ
-                res['Наліт (хв)'] = res['Хвилини']
+                # ОНОВЛЕНО: Форматування клітинки нальоту як Час (ГГ:ХХ)
+                res['Наліт (ГГ:ХХ)'] = res['Хвилини'].apply(format_to_time_str)
                 
-                final_table = res[['Місяць', 'Польоти', 'Затримання', 'Наліт (хв)']]
-                final_table.columns = ["📅 Місяць", "🚁 Вильоти", "🎯 Затримання", "⏱ Наліт (хв)"]
+                final_table = res[['Місяць', 'Польоти', 'Затримання', 'Наліт (ГГ:ХХ)']]
+                final_table.columns = ["📅 Місяць", "🚁 Вильоти", "🎯 Затримання", "⏱ Наліт (ГГ:ХХ)"]
                 
                 st.table(final_table.sort_values(by="📅 Місяць", ascending=False))
