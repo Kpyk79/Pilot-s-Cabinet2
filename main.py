@@ -5,10 +5,10 @@ from docx import Document
 import io
 import requests
 import os
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 
 # --- 1. КОНФІГУРАЦІЯ ТА СЕКРЕТИ ---
-st.set_page_config(page_title="UAV Pilot Cabinet v5.3", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="UAV Pilot Cabinet v5.4", layout="wide", page_icon="🛡️")
 
 def get_secret(key):
     val = st.secrets.get(key)
@@ -31,7 +31,6 @@ def calculate_duration(start, end):
     return d if d >= 0 else d + 1440
 
 def format_to_time_str(total_minutes):
-    """Конвертує хвилини у формат ГГ:ХХ"""
     hours = total_minutes // 60
     minutes = total_minutes % 60
     return f"{int(hours):02d}:{int(minutes):02d}"
@@ -68,26 +67,14 @@ def load_data(ws="Sheet1"):
 def send_telegram_msg(all_fl):
     if not TG_TOKEN or not TG_CHAT_ID: return
     first = all_fl[0]
-    flights_txt = "\n".join([f"{i+1}. {f['Взльот']}-{f['Посадка']} ({f['Тривалість (хв)']} хв, АКБ: {f['Номер АКБ']})" for i, f in enumerate(all_fl)])
-    
-    # ОНОВЛЕНО: Додано Час польотного завдання
-    report = (
-        f"🚁 **Донесення: {first['Підрозділ']}**\n"
-        f"👤 **Пілот:** {first['Оператор']}\n"
-        f"📅 **Дата:** {first['Дата']}\n"
-        f"⏱ **Час завд.:** {first['Час завдання']}\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"🚀 **Вильоти:**\n{flights_txt}\n"
-        f"🎯 **Результат:** {first['Результат']}"
-    )
-    
+    flights_txt = "\n".join([f"{i+1}. {f['Взльот']}-{f['Посадка']} ({f['Тривалість (хв)']} хв)" for i, f in enumerate(all_fl)])
+    report = f"🚁 **Донесення: {first['Підрозділ']}**\n👤 **Пілот:** {first['Оператор']}\n📅 **Дата:** {first['Дата']}\n⏱ **Час завд.:** {first['Час завдання']}\n━━━━━━━━━━━━━━━\n🚀 **Вильоти:**\n{flights_txt}\n🎯 **Результат:** {first['Результат']}"
     media_sent = False
     for fl in all_fl:
         if fl.get('files'):
             for img in fl['files']:
                 url = f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto"
-                requests.post(url, files={'photo': (img.name, img.getvalue(), img.type)}, 
-                              data={'chat_id': str(TG_CHAT_ID), 'caption': report, 'parse_mode': 'Markdown'}, timeout=60)
+                requests.post(url, files={'photo': (img.name, img.getvalue(), img.type)}, data={'chat_id': str(TG_CHAT_ID), 'caption': report, 'parse_mode': 'Markdown'}, timeout=60)
             media_sent = True
     if not media_sent:
         url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
@@ -123,8 +110,65 @@ else:
     st.sidebar.markdown(f"👤 **{st.session_state.user['name'] if st.session_state.role=='Pilot' else 'Адмін'}**")
     if st.sidebar.button("Вийти"): st.session_state.logged_in = False; st.rerun()
 
-    tab1, tab2, tab3 = st.tabs(["🚀 Польоти", "📜 Архів та Звіти", "📊 Аналітика"])
+    # СТВОРЕННЯ ВКЛАДОК (Заявка тепер перша)
+    tab_app, tab1, tab2, tab3 = st.tabs(["📋 Заявка на політ", "🚀 Польоти", "📜 Архів та Звіти", "📊 Аналітика"])
 
+    # --- ВКЛАДКА ЗАЯВКА ---
+    with tab_app:
+        st.header("📝 Формування заявки на політ")
+        with st.container(border=True):
+            app_unit = st.selectbox("1. Заявник (підрозділ):", UNITS, index=UNITS.index(st.session_state.user['unit']) if st.session_state.user['unit'] in UNITS else 0)
+            
+            col_drone1, col_drone2 = st.columns([2, 1])
+            app_drones = col_drone1.multiselect("2. Тип БпЛА:", DRONES, default=[st.session_state.user['drone']] if st.session_state.user['drone'] in DRONES else None)
+            app_sn = col_drone2.text_input("s/n (через кому):", placeholder="s/n: 123, 456")
+            
+            app_dates = st.date_input("3. Дата здійснення польоту (період):", value=(datetime.now(), datetime.now() + timedelta(days=1)))
+            
+            col_t1, col_t2 = st.columns(2)
+            app_time_from = col_t1.time_input("4. Час роботи з:", value=time(8,0), step=60)
+            app_time_to = col_t2.time_input("Час роботи до:", value=time(20,0), step=60)
+            
+            app_route = st.text_area("5. Населений пункт (маршрут):", placeholder="Вкажіть район або н.п.")
+            
+            col_h1, col_h2 = st.columns(2)
+            app_height = col_h1.text_input("6. Висота роботи (м):", value="до 500 м")
+            app_radius = col_h2.text_input("7. Радіус роботи (км):", value="до 5 км")
+            
+            app_purpose = st.selectbox("8. Мета польоту:", ["патрулювання ділянки відповідальності", "за оперативною необхідністю", "навчально-тренувальні польоти"])
+            
+            app_contact = st.text_input("9. Контактна особа (Прізвище/Позивний + тел):", value=f"{st.session_state.user['name']}, тел: ")
+
+        if st.button("✨ Сформувати текст заявки"):
+            # Форматування списку БпЛА з s/n
+            drones_str = ", ".join(app_drones)
+            if app_sn: drones_str += f" ({app_sn})"
+            
+            # Форматування дат
+            if isinstance(app_dates, tuple) and len(app_dates) == 2:
+                date_str = f"з {app_dates[0].strftime('%d.%m.%Y')} по {app_dates[1].strftime('%d.%m.%Y')}"
+            else:
+                date_str = app_dates[0].strftime('%d.%m.%Y') if isinstance(app_dates, tuple) else app_dates.strftime('%d.%m.%Y')
+
+            # Побудова фінального тексту
+            final_app_text = (
+                f"ЗАЯВКА НА ПОЛІТ\n"
+                f"1. Заявник: в/ч 2196 ({app_unit})\n"
+                f"2. Тип БпЛА: {drones_str}\n"
+                f"3. Дата здійснення польоту: {date_str}\n"
+                f"4. Час роботи: з {app_time_from.strftime('%H:%M')} по {app_time_to.strftime('%H:%M')}\n"
+                f"5. Населений пункт (маршрут): {app_route}\n"
+                f"6. Висота роботи (м): {app_height}\n"
+                f"7. Радіус роботи (км): {app_radius}\n"
+                f"8. Мета польоту: {app_purpose}\n"
+                f"9. Контактна особа: {app_contact}"
+            )
+            
+            st.subheader("📋 Готовий текст:")
+            st.code(final_app_text, language="text")
+            st.info("⬆️ Натисніть кнопку копіювання у правому верхньому куті вікна з текстом вище.")
+
+    # --- ВКЛАДКА ПОЛЬОТИ (Залишена без змін) ---
     with tab1:
         st.header("Внесення даних зміні")
         with st.container(border=True):
@@ -164,7 +208,7 @@ else:
                 conn.update(worksheet="Drafts", data=pd.concat([df_d, pd.DataFrame(st.session_state.temp_flights).drop(columns=['files'], errors='ignore')], ignore_index=True))
                 st.success("💾 Збережено!")
             if c_b3.button("🚀 ВІДПРАВИТИ ВСІ ДАНІ"):
-                with st.spinner("Збереження та відправка..."):
+                with st.spinner("Відправка..."):
                     all_fl = st.session_state.temp_flights
                     send_telegram_msg(all_fl)
                     final_to_db = []
@@ -176,6 +220,7 @@ else:
                     df_d = load_data("Drafts"); conn.update(worksheet="Drafts", data=df_d[df_d['Оператор'] != st.session_state.user['name']])
                     st.success("✅ Надіслано!"); st.session_state.temp_flights = []; st.rerun()
 
+    # --- ВКЛАДКА АРХІВ ---
     with tab2:
         st.header("📜 Мій журнал польотів")
         df_hist = load_data("Sheet1")
@@ -188,27 +233,18 @@ else:
             st.dataframe(personal_df.sort_values(by="Дата", ascending=False), use_container_width=True)
         else: st.info("Архів порожній.")
 
+    # --- ВКЛАДКА АНАЛІТИКА ---
     with tab3:
         st.header("📊 Статистика нальоту по місяцях")
         df_st = load_data("Sheet1")
         if not df_st.empty:
             if st.session_state.role == "Pilot":
                 df_st = df_st[df_st['Оператор'] == st.session_state.user['name']]
-            
             if not df_st.empty:
                 df_st['Дата_dt'] = pd.to_datetime(df_st['Дата'], format='%d.%m.%Y', errors='coerce')
                 df_st['Місяць'] = df_st['Дата_dt'].dt.strftime('%Y-%m')
-                
-                res = df_st.groupby('Місяць').agg(
-                    Польоти=('Дата', 'count'),
-                    Затримання=('Результат', lambda x: (x == "Затримання").sum()),
-                    Хвилини=('Тривалість (хв)', 'sum')
-                ).reset_index()
-                
-                # ОНОВЛЕНО: Форматування клітинки нальоту як Час (ГГ:ХХ)
+                res = df_st.groupby('Місяць').agg(Польоти=('Дата', 'count'), Затримання=('Результат', lambda x: (x == "Затримання").sum()), Хвилини=('Тривалість (хв)', 'sum')).reset_index()
                 res['Наліт (ГГ:ХХ)'] = res['Хвилини'].apply(format_to_time_str)
-                
                 final_table = res[['Місяць', 'Польоти', 'Затримання', 'Наліт (ГГ:ХХ)']]
                 final_table.columns = ["📅 Місяць", "🚁 Вильоти", "🎯 Затримання", "⏱ Наліт (ГГ:ХХ)"]
-                
                 st.table(final_table.sort_values(by="📅 Місяць", ascending=False))
