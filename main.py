@@ -8,7 +8,7 @@ import os
 from datetime import datetime, time, timedelta
 
 # --- 1. КОНФІГУРАЦІЯ ТА СЕКРЕТИ ---
-st.set_page_config(page_title="UAV Pilot Cabinet v5.8", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="UAV Pilot Cabinet v5.9", layout="wide", page_icon="🛡️")
 
 def get_secret(key):
     val = st.secrets.get(key)
@@ -19,7 +19,7 @@ def get_secret(key):
 TG_TOKEN = get_secret("TELEGRAM_BOT_TOKEN")
 TG_CHAT_ID = get_secret("TELEGRAM_CHAT_ID")
 
-# --- 2. КОНСТАНТИ ---
+# --- 2. КОНСТАНТИ ТА СЛОВНИКИ ---
 UNITS = ["впс Окни", "впс Кодима", "віпс Шершенці", "віпс Загнітків", "впс Станіславка", "віпс Тимкове", "віпс Чорна", "віпс Ткаченкове", "віпс Гандрабури", "віпс Новосеменівка", "впс Великокомарівка", "віпс Павлівка", "впс Велика Михайлівка", "віпс Слов'яносербка", "віпс Гребеники", "впс Степанівка", "віпс Кучурган", "віпс Лиманське", "віпс Лучинське", "УПЗ"]
 DRONES = ["DJI Mavic 3 Pro", "DJI Mavic 3E", "DJI Mavic 3T", "DJI Matrice 30T", "DJI Matrice 300", "Autel Evo Max 4T", "Skydio X2D", "Puma LE"]
 ADMIN_PASSWORD = "admin_secret"
@@ -219,17 +219,30 @@ else:
             if txt_a: st.code(txt_a, language="text")
             else: st.write("Немає записів")
 
-    # --- ВКЛАДКА АРХІВ ---
+    # --- ВКЛАДКА АРХІВ (ОНОВЛЕНО КОЛОНКИ) ---
     with tab_hist:
-        st.header("📜 Мій журнал")
+        st.header("📜 Мій журнал польотів")
         df_hist = load_data("Sheet1")
         if not df_hist.empty:
             personal_df = df_hist[df_hist['Оператор'] == st.session_state.user['name']] if st.session_state.role == "Pilot" else df_hist
-            st.dataframe(personal_df.sort_values(by="Дата", ascending=False), use_container_width=True)
+            
+            # ВИЗНАЧАЄМО СПИСОК КОЛОНОК ЗГІДНО ЗАПИТУ
+            archive_cols = [
+                "Дата", "Час завдання", "Підрозділ", "Оператор", "Дрон", "Маршрут", 
+                "Взльот", "Посадка", "Тривалість (хв)", "Дистанція (м)", "Результат", 
+                "Примітки", "Медіа (статус)", "Номер АКБ", "Цикли АКБ"
+            ]
+            
+            # Фільтруємо лише існуючі в базі колонки для безпеки
+            existing_archive_cols = [c for c in archive_cols if c in personal_df.columns]
+            
+            st.dataframe(personal_df[existing_archive_cols].sort_values(by="Дата", ascending=False), use_container_width=True)
+        else:
+            st.info("Архів порожній.")
 
-    # --- ВКЛАДКА АНАЛІТИКА (ОНОВЛЕНО ФОРМАТ) ---
+    # --- ВКЛАДКА АНАЛІТИКА ---
     with tab_stat:
-        st.header("📊 Статистика")
+        st.header("📊 Статистика нальоту")
         df_st = load_data("Sheet1")
         if not df_st.empty:
             if st.session_state.role == "Pilot": df_st = df_st[df_st['Оператор'] == st.session_state.user['name']]
@@ -237,19 +250,12 @@ else:
                 df_st['Дата_dt'] = pd.to_datetime(df_st['Дата'], format='%d.%m.%Y', errors='coerce')
                 df_st['Month_num'] = df_st['Дата_dt'].dt.month
                 df_st['Year_num'] = df_st['Дата_dt'].dt.year
-                
-                # Групуємо за роком та номером місяця для правильного сортування
                 res = df_st.groupby(['Year_num', 'Month_num']).agg(
                     Польоти=('Дата', 'count'), 
                     Затримання=('Результат', lambda x: (x == "Затримання").sum()), 
                     Хв=('Тривалість (хв)', 'sum')
                 ).reset_index()
-                
-                # Формуємо красиву українську назву
                 res['📅 Місяць'] = res.apply(lambda x: f"{UKR_MONTHS[int(x['Month_num'])]} {int(x['Year_num'])}", axis=1)
                 res['⏱ Наліт (ГГ:ХХ)'] = res['Хв'].apply(format_to_time_str)
-                
-                # Сортуємо: нові місяці зверху
                 res = res.sort_values(by=['Year_num', 'Month_num'], ascending=False)
-                
                 st.table(res[['📅 Місяць', 'Польоти', 'Затримання', '⏱ Наліт (ГГ:ХХ)']])
