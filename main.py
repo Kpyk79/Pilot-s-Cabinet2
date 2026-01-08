@@ -7,7 +7,7 @@ import time
 from datetime import datetime, time as d_time, timedelta
 
 # --- 1. КОНФІГУРАЦІЯ СТОРІНКИ ---
-st.set_page_config(page_title="UAV Pilot Cabinet v6.7", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="UAV Pilot Cabinet v6.8", layout="wide", page_icon="🛡️")
 
 def get_secret(key):
     val = st.secrets.get(key)
@@ -43,8 +43,7 @@ def format_to_time_str(total_minutes):
         hours = total_minutes // 60
         minutes = total_minutes % 60
         return f"{int(hours):02d}:{int(minutes):02d}"
-    except:
-        return "00:00"
+    except: return "00:00"
 
 def add_flight_callback():
     dur = calculate_duration(st.session_state.t_off, st.session_state.t_land)
@@ -100,9 +99,9 @@ st.markdown("""
     .duration-box { background-color: #f1f3f5; padding: 10px; border-radius: 8px; text-align: center; border: 1px solid #dee2e6; color: #1b5e20; font-size: 1.2em; }
     .splash-container { text-align: center; margin-top: 15%; }
     .slogan-box { color: #2E7D32; font-family: 'Courier New', monospace; font-weight: bold; font-size: 1.5em; border-top: 2px solid #2E7D32; border-bottom: 2px solid #2E7D32; padding: 20px 0; margin: 20px 0; letter-spacing: 2px; }
-    .contact-card { background-color: #e8f5e9; padding: 15px; border-radius: 10px; border-left: 5px solid #2E7D32; margin-bottom: 15px; }
-    .contact-title { font-size: 1.1em; font-weight: bold; color: #1B5E20; margin-bottom: 5px; }
-    .contact-desc { font-size: 0.9em; color: #444; font-style: italic; margin-bottom: 10px; line-height: 1.3; }
+    .contact-card { background-color: #e8f5e9; padding: 15px; border-radius: 10px; border-left: 5px solid #2E7D32; margin-bottom: 15px; color: black !important; }
+    .contact-title { font-size: 1.1em; font-weight: bold; color: black !important; margin-bottom: 5px; }
+    .contact-desc { font-size: 0.9em; color: black !important; font-style: italic; margin-bottom: 10px; line-height: 1.3; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -139,7 +138,7 @@ else:
 
     tab_app, tab_f, tab_cus, tab_hist, tab_stat, tab_info = st.tabs(["📋 Заявка", "🚀 Польоти", "📡 ЦУС", "📜 Архів", "📊 Аналітика", "ℹ️ Для довідки"])
 
-    # --- ВКЛАДКА ЗАЯВКА, ПОЛЬОТИ, ЦУС, АРХІВ ---
+    # --- ВКЛАДКА ЗАЯВКА, ПОЛЬОТИ, ЦУС ---
     with tab_app:
         st.header("📝 Формування заявки")
         with st.container(border=True):
@@ -197,59 +196,48 @@ else:
             def fc(fls): return "\n".join([f"{f['Взльот']} - {f['Посадка']} - {f['Дистанція (м)']} м ({f['Тривалість (хв)']} хв)" for f in fls])
             st.subheader("🌙 До 00:00"); st.code(fc(b_m), language="text"); st.subheader("☀️ Після 00:00"); st.code(fc(a_m), language="text")
 
+    # --- ВКЛАДКА АРХІВ (ЗАХИСТ ВІД ПОМИЛОК) ---
     with tab_hist:
         st.header("📜 Мій журнал")
         df_h = load_data("Sheet1")
         if not df_h.empty:
             p_df = df_h[df_h['Оператор'] == st.session_state.user['name']] if st.session_state.role == "Pilot" else df_h
-            cols = ["Дата", "Час завдання", "Підрозділ", "Оператор", "Дрон", "Маршрут", "Взльот", "Посадка", "Тривалість (хв)", "Дистанція (м)", "Результат", "Примітки", "Медіа (статус)", "Номер АКБ", "Цикли АКБ"]
-            st.dataframe(p_df[[c for c in cols if c in p_df.columns]].sort_values(by="Дата", ascending=False), use_container_width=True)
+            if not p_df.empty:
+                cols = ["Дата", "Час завдання", "Підрозділ", "Оператор", "Дрон", "Маршрут", "Взльот", "Посадка", "Тривалість (хв)", "Дистанція (м)", "Результат", "Примітки", "Медіа (статус)", "Номер АКБ", "Цикли АКБ"]
+                ex_cols = [c for c in cols if c in p_df.columns]
+                st.dataframe(p_df[ex_cols].sort_values(by="Дата", ascending=False), use_container_width=True)
+            else:
+                st.info("У вашому особистому архіві ще немає записів.")
+        else:
+            st.info("Архів бази даних порожній.")
 
-    # --- ВКЛАДКА АНАЛІТИКА (ВИПРАВЛЕНА ПОМИЛКА) ---
+    # --- ВКЛАДКА АНАЛІТИКА (ЗАХИСТ ВІД ПОМИЛОК) ---
     with tab_stat:
         st.header("📊 Аналітика")
         df_s = load_data("Sheet1")
         if not df_s.empty:
-            if st.session_state.role == "Pilot": 
-                df_s = df_s[df_s['Оператор'] == st.session_state.user['name']]
-            
+            if st.session_state.role == "Pilot": df_s = df_s[df_s['Оператор'] == st.session_state.user['name']]
             if not df_s.empty:
-                df_s['Дата_dt'] = pd.to_datetime(df_s['Дата'], format='%d.%m.%Y', errors='coerce')
-                df_s['M_num'] = df_s['Дата_dt'].dt.month
-                df_s['Y_num'] = df_s['Дата_dt'].dt.year
-                
-                # Групування
-                rs = df_s.groupby(['Y_num', 'M_num']).agg(
-                    Польоти=('Дата', 'count'), 
-                    Затримання=('Результат', lambda x: (x == "Затримання").sum()), 
-                    Хв=('Тривалість (хв)', 'sum')
-                ).reset_index()
-
-                # ПЕРЕВІРКА: чи є дані після групування
+                df_s['Дата_dt'] = pd.to_datetime(df_s['Дата'], format='%d.%m.%Y', errors='coerce'); df_s['M_num'] = df_s['Дата_dt'].dt.month; df_s['Y_num'] = df_s['Дата_dt'].dt.year
+                rs = df_s.groupby(['Y_num', 'M_num']).agg(Польоти=('Дата', 'count'), Затримання=('Результат', lambda x: (x == "Затримання").sum()), Хв=('Тривалість (хв)', 'sum')).reset_index()
                 if not rs.empty:
-                    rs['📅 Місяць'] = rs.apply(lambda x: f"{UKR_MONTHS.get(int(x['M_num']), '???')} {int(x['Y_num'])}", axis=1)
-                    rs['⏱ Наліт (ГГ:ХХ)'] = rs['Хв'].apply(format_to_time_str)
-                    
-                    final_stat = rs.sort_values(by=['Y_num', 'M_num'], ascending=False)[['📅 Місяць', 'Польоти', 'Затримання', '⏱ Наліт (ГГ:ХХ)']]
-                    st.table(final_stat)
-                else:
-                    st.info("Польотів ще не знайдено.")
-            else:
-                st.info("У вашому журналі поки немає записів для розрахунку статистики.")
-        else:
-            st.info("Загальна база польотів порожня.")
+                    rs['📅 Місяць'] = rs.apply(lambda x: f"{UKR_MONTHS.get(int(x['M_num']), '???')} {int(x['Y_num'])}", axis=1); rs['⏱ Наліт (ГГ:ХХ)'] = rs['Хв'].apply(format_to_time_str)
+                    st.table(rs.sort_values(by=['Y_num', 'M_num'], ascending=False)[['📅 Місяць', 'Польоти', 'Затримання', '⏱ Наліт (ГГ:ХХ)']])
+                else: st.info("Дані для статистики відсутні.")
+            else: st.info("Польотів ще не знайдено.")
+        else: st.info("Загальна база даних порожня.")
 
-    # --- ВКЛАДКА ДЛЯ ДОВІДКИ ---
+    # --- ВКЛАДКА ДЛЯ ДОВІДКИ (ЧОРНИЙ ШРИФТ) ---
     with tab_info:
         st.header("ℹ️ Довідкова інформація")
         st.subheader("📞 Контакти та зони відповідальності")
         c1, c2, c3 = st.columns(3)
         with c1:
-            st.markdown("""<div class='contact-card'><div class='contact-title'>🎓 Інструктор</div><div class='contact-desc'>Питання тактики застосування, налаштування систем та ПЗ.</div><b>Олександр</b><br>+380502310609</div>""", unsafe_allow_html=True)
+            st.markdown("""<div class='contact-card'><div class='contact-title'>🎓 Інструктор</div><div class='contact-desc'>Питання тактики застосування, налаштування систем та спеціалізованого ПЗ.</div><b>Олександр</b><br>+380502310609</div>""", unsafe_allow_html=True)
         with c2:
-            st.markdown("""<div class='contact-card'><div class='contact-title'>🔧 Технік-майстер</div><div class='contact-desc'>Механічні пошкодження, ремонт, збої апаратної частини.</div><b>Сергій</b><br>+380997517054</div>""", unsafe_allow_html=True)
+            st.markdown("""<div class='contact-card'><div class='contact-title'>🔧 Технік-майстер</div><div class='contact-desc'>Механічні пошкодження майна, ремонт, збої апаратної частини.</div><b>Сергій</b><br>+380997517054</div>""", unsafe_allow_html=True)
         with c3:
-            st.markdown("""<div class='contact-card'><div class='contact-title'>📦 Начальник складу</div><div class='contact-desc'>Облік майна, прийом-передача обладнання.</div><b>Ірина</b><br>+380667869701</div>""", unsafe_allow_html=True)
+            st.markdown("""<div class='contact-card'><div class='contact-title'>📦 Начальник складу</div><div class='contact-desc'>Облік майна, оформлення актів, переміщення та передача обладнання.</div><b>Ірина</b><br>+380667869701</div>""", unsafe_allow_html=True)
 
         st.write("---")
         st.subheader("📖 Повна документація")
@@ -263,12 +251,12 @@ else:
             * Натисніть «Сформувати текст заявки» та скопіюйте його кнопкою.
 
             **3. 🚀 Вкладка «Польоти»**
-            * **Крок А:** Встановіть Дату завдання, Час зміни та оберіть БпЛА на зміну.
-            * **Крок Б:** Вкажіть час Взльоту/Посадки, Відстань, Номер АКБ та Цикли. Оберіть Результат, додайте Примітки та Скріншоти.
-            * **Крок В:** Тисніть «➕ Додати у список». В кінці зміни обов'язково — «🚀 ВІДПРАВИТИ ВСІ ДАНІ».
+            * **Крок А (Завдання):** Встановіть Дату, Час зміни та оберіть БпЛА на зміну.
+            * **Крок Б (Виліт):** Вкажіть час Взльоту/Посадки, Відстань, Номер АКБ та Цикли. Оберіть Результат, додайте Примітки та Скріншоти.
+            * **Крок В (Управління):** Тисніть «➕ Додати у список». В кінці зміни обов'язково — «🚀 ВІДПРАВИТИ ВСІ ДАНІ».
 
             **4. 📡 Вкладка «ЦУС»**
-            * Система сама розбиває польоти на вікна «До 00:00» та «Після 00:00» (враховуючи переходи через північ).
+            * Система сама розбиває польоти на вікна «До 00:00» та «Після 00:00».
 
             **💡 Поради:**
             * При слабкому інтернеті тисніть «Зберегти в Хмару».
@@ -280,4 +268,4 @@ else:
             **iPhone (Safari):** Поділитися -> «Додати на початковий екран».
             """)
         st.write("---")
-        st.markdown("<div style='text-align: center;'>Слава Україні! 🇺🇦</div>", unsafe_allow_html=True)
+        st.markdown("<div style='text-align: center; color: black;'>Слава Україні! 🇺🇦</div>", unsafe_allow_html=True)
