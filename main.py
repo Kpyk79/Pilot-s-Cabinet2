@@ -7,7 +7,7 @@ import time
 from datetime import datetime, time as d_time, timedelta
 
 # --- 1. КОНФІГУРАЦІЯ СТОРІНКИ ---
-st.set_page_config(page_title="UAV Pilot Cabinet v6.3", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="UAV Pilot Cabinet v6.4", layout="wide", page_icon="🛡️")
 
 def get_secret(key):
     val = st.secrets.get(key)
@@ -18,7 +18,7 @@ def get_secret(key):
 TG_TOKEN = get_secret("TELEGRAM_BOT_TOKEN")
 TG_CHAT_ID = get_secret("TELEGRAM_CHAT_ID")
 
-# --- 2. КОНСТАНТИ ТА СЛОВНИКИ (ОНОВЛЕНО) ---
+# --- 2. КОНСТАНТИ ТА СЛОВНИКИ ---
 UNITS = [
     "впс Кодима", "віпс Шершенці", "віпс Загнітків", "впс Станіславка", 
     "віпс Тимкове", "віпс Чорна", "впс Окни", "віпс Ткаченкове", 
@@ -101,10 +101,11 @@ st.markdown("""
     .duration-box { background-color: #f1f3f5; padding: 10px; border-radius: 8px; text-align: center; border: 1px solid #dee2e6; color: #1b5e20; font-size: 1.2em; }
     .splash-container { text-align: center; margin-top: 15%; }
     .slogan-box { color: #2E7D32; font-family: 'Courier New', monospace; font-weight: bold; font-size: 1.5em; border-top: 2px solid #2E7D32; border-bottom: 2px solid #2E7D32; padding: 20px 0; margin: 20px 0; letter-spacing: 2px; }
+    .contact-card { background-color: #e8f5e9; padding: 15px; border-radius: 10px; border-left: 5px solid #2E7D32; margin-bottom: 10px; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 6. SPLASH SCREEN (ЗАСТАВКА) ---
+# --- 6. SPLASH SCREEN ---
 if not st.session_state.splash_done:
     container = st.empty()
     with container.container():
@@ -112,20 +113,13 @@ if not st.session_state.splash_done:
         st.markdown("<h1 style='font-size: 4em;'>🛡️</h1>", unsafe_allow_html=True)
         st.markdown("<h1>UAV PILOT CABINET</h1>", unsafe_allow_html=True)
         st.markdown("<div class='slogan-box'>СТАЛЕВИЙ ОБЛІК ДЛЯ СТАЛЕВОГО КОРДОНУ</div>", unsafe_allow_html=True)
-        
-        progress_text = "Ініціалізація захищеного зв'язку..."
-        my_bar = st.progress(0, text=progress_text)
-        for percent_complete in range(100):
-            time.sleep(0.01)
-            my_bar.progress(percent_complete + 1, text=progress_text)
-        
-        st.markdown("</div>", unsafe_allow_html=True)
-        time.sleep(0.5)
-    
-    st.session_state.splash_done = True
-    st.rerun()
+        my_bar = st.progress(0, text="Ініціалізація захищеного зв'язку...")
+        for p in range(100):
+            time.sleep(0.01); my_bar.progress(p + 1)
+        st.markdown("</div>", unsafe_allow_html=True); time.sleep(0.5)
+    st.session_state.splash_done = True; st.rerun()
 
-# --- 7. ОСНОВНИЙ ІНТЕРФЕЙС ---
+# --- 7. ІНТЕРФЕЙС ---
 if not st.session_state.logged_in:
     st.markdown("<h2 style='text-align: center;'>🛡️ ВХІД У СИСТЕМУ</h2>", unsafe_allow_html=True)
     role = st.radio("Оберіть статус:", ["Пілот", "Адміністратор"], horizontal=True)
@@ -146,15 +140,13 @@ if not st.session_state.logged_in:
 else:
     st.sidebar.markdown(f"👤 **{st.session_state.user['name'] if st.session_state.role=='Pilot' else 'Адмін'}**")
     if st.sidebar.button("Завершити сеанс"): 
-        st.session_state.logged_in = False
-        st.session_state.splash_done = False
-        st.rerun()
+        st.session_state.logged_in = False; st.session_state.splash_done = False; st.rerun()
 
-    tab_app, tab_f, tab_cus, tab_hist, tab_stat = st.tabs([
-        "📋 Заявка", "🚀 Польоти", "📡 ЦУС", "📜 Архів", "📊 Аналітика"
+    tab_app, tab_f, tab_cus, tab_hist, tab_stat, tab_info = st.tabs([
+        "📋 Заявка", "🚀 Польоти", "📡 ЦУС", "📜 Архів", "📊 Аналітика", "ℹ️ Для довідки"
     ])
 
-    # --- ВКЛАДКИ (Код без змін) ---
+    # --- ВКЛАДКА ЗАЯВКА (Код без змін) ---
     with tab_app:
         st.header("📝 Формування заявки")
         with st.container(border=True):
@@ -175,6 +167,7 @@ else:
             f_txt = f"ЗАЯВКА НА ПОЛІТ\n1. Заявник: в/ч 2196 ({app_unit})\n2. Тип БпЛА: {d_str}\n3. Дата здійснення польоту: {dt_r}\n4. Час роботи: з {a_t1.strftime('%H:%M')} по {a_t2.strftime('%H:%M')}\n5. Населений пункт (маршрут): {app_route}\n6. Висота роботи (м): {a_h}\n7. Радіус роботи (км): {a_r}\n8. Мета польоту: {app_purp}\n9. Контактна особа: {app_cont}"
             st.code(f_txt, language="text")
 
+    # --- ВКЛАДКА ПОЛЬОТИ ---
     with tab_f:
         st.header("Внесення польотів")
         with st.container(border=True):
@@ -189,8 +182,7 @@ else:
             col1, col2, col3, col4 = st.columns(4)
             t_o = col1.time_input("Взльот", d_time(9,0), key="t_off")
             t_l = col2.time_input("Посадка", d_time(9,30), key="t_land")
-            dur = calculate_duration(t_o, t_l)
-            col3.markdown(f"<div class='duration-box'>⏳ <b>{dur} хв</b></div>", unsafe_allow_html=True)
+            dur = calculate_duration(t_o, t_l); col3.markdown(f"<div class='duration-box'>⏳ <b>{dur} хв</b></div>", unsafe_allow_html=True)
             f_dist = col4.number_input("Відстань (м)", min_value=0, key="f_dist")
             cb1, cb2 = st.columns(2); f_akb = cb1.text_input("Номер АКБ", key="f_akb"); f_cyc = cb2.number_input("Цикли АКБ", min_value=0, key="f_cyc")
             f_res = st.selectbox("Результат", ["Без ознак порушення", "Затримання", "Виявлення цілі"], key="f_res")
@@ -223,6 +215,7 @@ else:
                     df_d = load_data("Drafts"); conn.update(worksheet="Drafts", data=df_d[df_d['Оператор'] != st.session_state.user['name']])
                     st.success("✅ Надіслано!"); st.session_state.temp_flights = []; st.rerun()
 
+    # --- ВКЛАДКА ЦУС ---
     with tab_cus:
         st.header("📡 Дані для ЦУС")
         if not st.session_state.temp_flights: st.info("Список порожній.")
@@ -237,8 +230,9 @@ else:
             st.subheader("🌙 До 00:00"); st.code(fc(b_m), language="text")
             st.subheader("☀️ Після 00:00"); st.code(fc(a_m), language="text")
 
+    # --- ВКЛАДКА АРХІВ ТА АНАЛІТИКА (Код без змін) ---
     with tab_hist:
-        st.header("📜 Мій журнал польотів")
+        st.header("📜 Мій журнал")
         df_h = load_data("Sheet1")
         if not df_h.empty:
             p_df = df_h[df_h['Оператор'] == st.session_state.user['name']] if st.session_state.role == "Pilot" else df_h
@@ -246,7 +240,7 @@ else:
             st.dataframe(p_df[[c for c in cols if c in p_df.columns]].sort_values(by="Дата", ascending=False), use_container_width=True)
 
     with tab_stat:
-        st.header("📊 Статистика")
+        st.header("📊 Аналітика")
         df_s = load_data("Sheet1")
         if not df_s.empty:
             if st.session_state.role == "Pilot": df_s = df_s[df_s['Оператор'] == st.session_state.user['name']]
@@ -256,3 +250,72 @@ else:
             rs['📅 Місяць'] = rs.apply(lambda x: f"{UKR_MONTHS[int(x['M_num'])]} {int(x['Y_num'])}", axis=1)
             rs['⏱ Наліт (ГГ:ХХ)'] = rs['Хв'].apply(format_to_time_str)
             st.table(rs.sort_values(by=['Y_num', 'M_num'], ascending=False)[['📅 Місяць', 'Польоти', 'Затримання', '⏱ Наліт (ГГ:ХХ)']])
+
+    # --- ВКЛАДКА ДЛЯ ДОВІДКИ ---
+    with tab_info:
+        st.header("ℹ️ Довідкова інформація")
+        
+        # Контакти
+        st.subheader("📞 Важливі контакти")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.markdown("<div class='contact-card'><b>Інструктор</b><br>Олександр<br>+380502310609</div>", unsafe_allow_html=True)
+        with c2:
+            st.markdown("<div class='contact-card'><b>Технік-майстер</b><br>Сергій<br>+380997517054</div>", unsafe_allow_html=True)
+        with c3:
+            st.markdown("<div class='contact-card'><b>Начальник складу</b><br>Ірина<br>+380667869701</div>", unsafe_allow_html=True)
+
+        st.write("---")
+
+        # Інструкції з файлів
+        st.subheader("📖 Документація")
+        
+        with st.expander("🛡️ Інструкція користувача: Кабінет пілота БпЛА (v6.0)"):
+            st.markdown("""
+            Цей додаток призначений для швидкого формування заявок, обліку польотів, автоматизації звітів на ЦУС та ведення персонального журналу нальоту.
+            
+            **1. Керування входом:**
+            * Оберіть свій Підрозділ зі списку.
+            * Введіть Звання та Прізвище (або позивний)[cite: 5].
+            * Натисніть кнопку «Увійти»[cite: 6].
+            * Примітка: Невідправлені чернетки підтягнуться автоматично[cite: 7].
+            
+            **2. Вкладка «Заявка»:**
+            * Використовується для швидкого створення тексту заявки[cite: 9].
+            * Перевірте підрозділ, оберіть Типи БпЛА, вкажіть s/n через кому[cite: 10, 11].
+            * Оберіть період дат, час, маршрут, висоту та радіус[cite: 12, 13].
+            * Скопіюйте готовий текст кнопкою у верхньому правому куті[cite: 15].
+            
+            **3. Вкладка «Польоти»:**
+            * Крок А: Встановіть дату завдання, час зміни та оберіть БпЛА на зміну[cite: 19, 21].
+            * Крок Б: Вкажіть час взльоту/посадки, відстань, номер АКБ та цикли[cite: 23, 24, 25].
+            * Оберіть результат, додайте примітки та завантажте фото/скріншоти[cite: 26, 27, 28].
+            * Крок В: Використовуйте кнопки для видалення останнього запису, збереження в хмару або відправки всіх даних[cite: 30, 31, 33].
+            
+            **4. Вкладка «ЦУС»:**
+            * Автоматично розділяє польоти на вікна «До 00:00» та «Після 00:00»[cite: 36].
+            * Інтелектуальна логіка враховує польоти, що переходять через північ[cite: 37].
+            
+            **💡 Поради:**
+            * Для нічної зміни вказуйте дату, якою зміна почалася[cite: 43].
+            * При слабкому інтернеті обов'язково тисніть «Зберегти в Хмару»[cite: 44].
+            * Завантажуйте фото, коли вказуєте причини невиконання польоту[cite: 45].
+            """)
+
+        with st.expander("📲 Як встановити «Кабінет пілота» на смартфон"):
+            st.markdown("""
+            Це дозволить відкривати програму однією кнопкою без пошуку посилання[cite: 48].
+            
+            **Для Android (Google Chrome):**
+            1. Відкрийте посилання у Chrome[cite: 50].
+            2. Натисніть три крапки (⋮)[cite: 51].
+            3. Оберіть «Додати на головний екран» або «Встановити додаток»[cite: 52, 53].
+            
+            **Для iPhone (Safari):**
+            1. Відкрийте посилання у Safari[cite: 55].
+            2. Натисніть кнопку «Поділитися» (квадрат зі стрілкою вгору)[cite: 56].
+            3. Оберіть «Додати на початковий екран» та натисніть «Додати»[cite: 57, 58].
+            """)
+        
+        st.write("---")
+        st.markdown("<div style='text-align: center;'>Слава Україні! 🇺🇦 [cite: 46]</div>", unsafe_allow_html=True)
