@@ -8,7 +8,7 @@ import os
 from datetime import datetime, time, timedelta
 
 # --- 1. КОНФІГУРАЦІЯ ТА СЕКРЕТИ ---
-st.set_page_config(page_title="UAV Pilot Cabinet v5.6", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="UAV Pilot Cabinet v5.7", layout="wide", page_icon="🛡️")
 
 def get_secret(key):
     val = st.secrets.get(key)
@@ -93,7 +93,7 @@ if not st.session_state.logged_in:
     role = st.radio("Режим:", ["Пілот", "Адміністратор"], horizontal=True)
     with st.container(border=True):
         if role == "Пілот":
-            u = st.selectbox("Підрозділ:", UNITS); n = st.text_input("Звання та прізвище:"); d = st.selectbox("Дрон:", DRONES)
+            u = st.selectbox("Підрозділ:", UNITS); n = st.text_input("Звання та Прізвище:"); d = st.selectbox("Дрон:", DRONES)
             if st.button("Увійти") and n:
                 st.session_state.logged_in, st.session_state.role, st.session_state.user = True, "Pilot", {"unit": u, "name": n, "drone": d}
                 df_d = load_data("Drafts")
@@ -111,14 +111,14 @@ else:
     if st.sidebar.button("Вийти"): st.session_state.logged_in = False; st.rerun()
 
     tab_app, tab_f, tab_cus, tab_hist, tab_stat = st.tabs([
-        "📋 Заявка на політ", "🚀 Польоти", "📡 Польоти на ЦУС", "📜 Архів та Звіти", "📊 Аналітика"
+        "📋 Заявка", "🚀 Польоти", "📡 ЦУС", "📜 Архів", "📊 Аналітика"
     ])
 
     # --- ВКЛАДКА ЗАЯВКА ---
     with tab_app:
         st.header("📝 Формування заявки")
         with st.container(border=True):
-            app_unit = st.selectbox("1. Заявник (підрозділ):", UNITS, index=UNITS.index(st.session_state.user['unit']) if st.session_state.user['unit'] in UNITS else 0)
+            app_unit = st.selectbox("1. Заявник:", UNITS, index=UNITS.index(st.session_state.user['unit']) if st.session_state.user['unit'] in UNITS else 0)
             app_drones = st.multiselect("2. Тип БпЛА:", DRONES, default=[st.session_state.user['drone']] if st.session_state.user['drone'] in DRONES else None)
             app_sn = st.text_input("s/n:", placeholder="s/n: 123, 456")
             app_dates = st.date_input("3. Дата здійснення польоту:", value=(datetime.now(), datetime.now() + timedelta(days=1)))
@@ -160,20 +160,22 @@ else:
         if st.session_state.temp_flights:
             st.subheader("📋 Список польотів (чернетка)")
             df_temp = pd.DataFrame(st.session_state.temp_flights)
-            cols_show = ["Взльот", "Посадка", "Дистанція (м)", "Тривалість (хв)", "Номер АКБ"]
-            df_v = df_temp[cols_show]; df_v.columns = ["Зліт", "Посадка", "Відстань", "Хв", "№ АКБ"]
+            # ОНОВЛЕНО: ДОДАНО ЦИКЛИ АКБ В ТАБЛИЦЮ ЧЕРНЕТКИ
+            cols_show = ["Взльот", "Посадка", "Дистанція (м)", "Тривалість (хв)", "Номер АКБ", "Цикли АКБ"]
+            df_v = df_temp[cols_show]
+            df_v.columns = ["Зліт", "Посадка", "Відстань", "Хв", "№ АКБ", "Цикли"]
             st.dataframe(df_v, use_container_width=True)
+            
             c_b1, c_b2, c_b3 = st.columns(3)
             if c_b1.button("🗑️ Видалити останній"): st.session_state.temp_flights.pop(); st.rerun()
             if c_b2.button("💾 Зберегти в Хмару"):
                 df_d = load_data("Drafts")
                 df_d = df_d[df_d['Оператор'] != st.session_state.user['name']]
                 conn.update(worksheet="Drafts", data=pd.concat([df_d, pd.DataFrame(st.session_state.temp_flights).drop(columns=['files'], errors='ignore')], ignore_index=True))
-                st.success("💾 Збережено!")
+                st.success("💾 Чернетка збережена!")
             if c_b3.button("🚀 ВІДПРАВИТИ ВСІ ДАНІ"):
                 with st.spinner("Відправка..."):
-                    all_fl = st.session_state.temp_flights
-                    send_telegram_msg(all_fl)
+                    all_fl = st.session_state.temp_flights; send_telegram_msg(all_fl)
                     final_to_db = []
                     for f in all_fl:
                         row = f.copy(); row.pop('files', None); row["Медіа (статус)"] = "З фото" if f.get('files') else "Текст"
@@ -183,44 +185,33 @@ else:
                     df_d = load_data("Drafts"); conn.update(worksheet="Drafts", data=df_d[df_d['Оператор'] != st.session_state.user['name']])
                     st.success("✅ Надіслано!"); st.session_state.temp_flights = []; st.rerun()
 
-    # --- ВКЛАДКА ПОЛЬОТИ НА ЦУС (ОНОВЛЕНО ЛОГІКУ) ---
+    # --- ВКЛАДКА ЦУС ---
     with tab_cus:
         st.header("📡 Дані для ЦУС")
         if not st.session_state.temp_flights:
             st.info("Додайте польоти у вкладці '🚀 Польоти', щоб сформувати дані.")
         else:
             all_f = st.session_state.temp_flights
-            shift_start_t = st.session_state.m_start_val # Час початку зміни
-            
-            before_midnight = []
-            after_midnight = []
-            midnight_crossed = False
-            
+            shift_start_t = st.session_state.m_start_val
+            before_m, after_m, crossed = [], [], False
             for f in all_f:
                 f_start = datetime.strptime(f['Взльот'], "%H:%M").time()
                 f_end = datetime.strptime(f['Посадка'], "%H:%M").time()
-                
-                # ТРИГЕР ПЕРЕХОДУ ПІСЛЯ 00:00:
-                # 1. Якщо посадка раніше зльоту (політ через північ)
-                # 2. Якщо зліт раніше початку зміни (вже наступна доба)
-                # 3. Якщо будь-який попередній політ уже перетнув північ
-                if midnight_crossed or f_end < f_start or f_start < shift_start_t:
-                    midnight_crossed = True
-                    after_midnight.append(f)
-                else:
-                    before_midnight.append(f)
+                if crossed or f_end < f_start or f_start < shift_start_t:
+                    crossed = True; after_m.append(f)
+                else: before_m.append(f)
             
             def format_cus(flights):
                 return "\n".join([f"{f['Взльот']} - {f['Посадка']} - {f['Дистанція (м)']} м ({f['Тривалість (хв)']} хв)" for f in flights])
             
             st.subheader("🌙 Вікно 1: Польоти до 00:00")
-            txt_before = format_cus(before_midnight)
-            if txt_before: st.code(txt_before, language="text")
+            txt_b = format_cus(before_m)
+            if txt_b: st.code(txt_b, language="text")
             else: st.write("Немає записів")
                 
             st.subheader("☀️ Вікно 2: Польоти після 00:00")
-            txt_after = format_cus(after_midnight)
-            if txt_after: st.code(txt_after, language="text")
+            txt_a = format_cus(after_m)
+            if txt_a: st.code(txt_a, language="text")
             else: st.write("Немає записів")
 
     # --- ВКЛАДКА АРХІВ ---
