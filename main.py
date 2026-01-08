@@ -9,7 +9,7 @@ import os
 from datetime import datetime, time
 
 # --- 1. КОНФІГУРАЦІЯ ТА СЕКРЕТИ ---
-st.set_page_config(page_title="UAV Pilot Cabinet v4.4", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="UAV Pilot Cabinet v4.5", layout="wide", page_icon="🛡️")
 
 def get_secret(key):
     val = st.secrets.get(key)
@@ -27,10 +27,18 @@ UNITS = ["впс Кодима", "віпс Шершенці", "віпс Загн�
 DRONES = ["DJI Mavic 3 Pro", "DJI Mavic 3E", "DJI Mavic 3T", "DJI Matrice 30T", "DJI Matrice 300", "Autel Evo Max 4T", "Skydio X2D", "Puma LE"]
 ADMIN_PASSWORD = "admin_secret"
 
-# --- 3. ФУНКЦІЯ CALLBACK (РЯТУЄ ВІД ПОМИЛКИ) ---
+# --- 3. ДОПОМІЖНІ ФУНКЦІЇ ---
+def calculate_duration(start, end):
+    s_min = start.hour * 60 + start.minute
+    e_min = end.hour * 60 + end.minute
+    diff = e_min - s_min
+    return diff if diff >= 0 else diff + 1440
+
 def add_flight_callback():
-    # 1. Capture values from session state before reset
-    # We access them via the 'key' we assigned to widgets
+    # Розрахунок тривалості для запису
+    duration = calculate_duration(st.session_state.t_off, st.session_state.t_land)
+    
+    # Створення об'єкта польоту
     new_flight = {
         "Дата": st.session_state.m_date_val.strftime("%d.%m.%Y"),
         "Час завдання": f"{st.session_state.m_start_val.strftime('%H:%M')} - {st.session_state.m_end_val.strftime('%H:%M')}",
@@ -40,7 +48,7 @@ def add_flight_callback():
         "Маршрут": st.session_state.m_route_val,
         "Взльот": st.session_state.t_off.strftime("%H:%M"),
         "Посадка": st.session_state.t_land.strftime("%H:%M"),
-        "Тривалість (хв)": calculate_duration(st.session_state.t_off, st.session_state.t_land),
+        "Тривалість (хв)": duration,
         "Дистанція (м)": st.session_state.f_dist,
         "Номер АКБ": st.session_state.f_akb,
         "Цикли АКБ": st.session_state.f_cyc,
@@ -48,18 +56,16 @@ def add_flight_callback():
         "Примітки": st.session_state.f_note,
         "files": st.session_state[f"uploader_{st.session_state.uploader_key}"]
     }
-    
-    # 2. Add to the list
     st.session_state.temp_flights.append(new_flight)
     
-    # 3. RESET fields (This works inside callback!)
+    # СКИНУТИ ПОЛЯ (Окрім часу та маршруту, щоб не вводити заново)
     st.session_state.f_dist = 0
     st.session_state.f_akb = ""
     st.session_state.f_cyc = 0
     st.session_state.f_note = ""
     st.session_state.uploader_key += 1
 
-# --- 4. СЕРВІСИ ТЕЛЕГРАМ ТА DOCX ---
+# --- 4. СЕРВІСИ ТЕЛЕГРАМ ТА ТАБЛИЦЬ ---
 def send_telegram_text(text):
     if not TG_TOKEN or not TG_CHAT_ID: return "❌ Помилка налаштувань"
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
@@ -86,17 +92,20 @@ def load_data():
     except:
         return pd.DataFrame(columns=["Дата", "Час завдання", "Підрозділ", "Оператор", "Дрон", "Маршрут", "Взльот", "Посадка", "Тривалість (хв)", "Дистанція (м)", "Номер АКБ", "Цикли АКБ", "Результат", "Примітки", "Медіа (статус)"])
 
-def calculate_duration(start, end):
-    s, e = start.hour * 60 + start.minute, end.hour * 60 + end.minute
-    d = e - s
-    return d if d >= 0 else d + 1440
-
 # --- 5. СТАН СЕСІЇ ---
 if 'temp_flights' not in st.session_state: st.session_state.temp_flights = []
 if 'logged_in' not in st.session_state: st.session_state.logged_in = False
 if 'uploader_key' not in st.session_state: st.session_state.uploader_key = 0
 
 # --- 6. ІНТЕРФЕЙС ---
+st.markdown("""
+    <style>
+    .main { background-color: #f8f9fa; }
+    .stButton>button { width: 100%; border-radius: 8px; background-color: #2b4231; color: white; height: 3.5em; font-weight: bold; }
+    .duration-box { background-color: #f1f3f5; padding: 10px; border-radius: 8px; text-align: center; border: 1px solid #dee2e6; color: #2b4231; font-size: 1.2em; }
+    </style>
+    """, unsafe_allow_html=True)
+
 if not st.session_state.logged_in:
     st.title("🛡️ Кабінет пілота БпЛА")
     role = st.radio("Режим:", ["Пілот", "Адміністратор"], horizontal=True)
@@ -127,7 +136,6 @@ else:
             st.header("Внесення даних зміні")
             with st.container(border=True):
                 c1, c2, c3, c4 = st.columns(4)
-                # Додаємо ключі і для полів зміни
                 m_date = c1.date_input("Дата завдання", datetime.now(), key="m_date_val")
                 m_start = c2.time_input("Зміна з", value=time(8,0), step=60, key="m_start_val")
                 m_end = c3.time_input("Зміна до", value=time(20,0), step=60, key="m_end_val")
@@ -135,10 +143,15 @@ else:
 
             with st.expander("📝 Додати політ", expanded=True):
                 col1, col2, col3, col4 = st.columns(4)
-                t_off = col1.time_input("Взльот", value=time(9,0), step=60, key="t_off")
-                t_land = col2.time_input("Посадка", value=time(9,30), step=60, key="t_land")
-                f_dur = calculate_duration(t_off, t_land)
-                col3.markdown(f"<div class='duration-box'>⏳ <b>{f_dur} хв</b></div>", unsafe_allow_html=True)
+                
+                # Поля часу
+                t_off_input = col1.time_input("Взльот", value=time(9,0), step=60, key="t_off")
+                t_land_input = col2.time_input("Посадка", value=time(9,30), step=60, key="t_land")
+                
+                # ЖИВИЙ РОЗРАХУНОК ТРИВАЛОСТІ
+                current_dur = calculate_duration(t_off_input, t_land_input)
+                col3.markdown(f"<div class='duration-box'>⏳ <b>{current_dur} хв</b></div>", unsafe_allow_html=True)
+                
                 f_dist = col4.number_input("Відстань (м)", min_value=0, step=10, key="f_dist")
                 
                 cb1, cb2 = st.columns(2)
@@ -150,7 +163,7 @@ else:
                 
                 f_imgs = st.file_uploader("📸 Скріншоти", accept_multiple_files=True, key=f"uploader_{st.session_state.uploader_key}")
 
-                # Кнопка тепер використовує on_click
+                # Кнопка додавання
                 st.button("➕ Додати у список", on_click=add_flight_callback)
 
             if st.session_state.temp_flights:
@@ -202,3 +215,16 @@ else:
                         st.success("Дані успішно відправлені!")
                         st.session_state.temp_flights = []
                         st.rerun()
+
+        with tab2:
+            st.header("📜 Донесення")
+            st.info("Вкладка в розробці.")
+            
+        with tab3:
+            st.header("📊 Аналітика")
+            df_full = load_data()
+            if not df_full.empty:
+                u_df = df_full[df_full['Підрозділ'] == st.session_state.user['unit']].copy()
+                if not u_df.empty:
+                    u_df['Тривалість (хв)'] = pd.to_numeric(u_df['Тривалість (хв)'], errors='coerce')
+                    st.plotly_chart(px.bar(u_df, x='Дата', y='Тривалість (хв)', color='Результат'), use_container_width=True)
