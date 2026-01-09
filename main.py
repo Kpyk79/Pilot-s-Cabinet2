@@ -7,7 +7,7 @@ import time
 from datetime import datetime, time as d_time, timedelta
 
 # --- 1. КОНФІГУРАЦІЯ СТОРІНКИ ---
-st.set_page_config(page_title="UAV Pilot Cabinet v7.3", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="UAV Pilot Cabinet v7.4", layout="wide", page_icon="🛡️")
 
 def get_secret(key):
     val = st.secrets.get(key)
@@ -140,13 +140,12 @@ else:
 
     tab_app, tab_f, tab_cus, tab_hist, tab_stat, tab_info = st.tabs(["📋 Заявка", "🚀 Польоти", "📡 ЦУС", "📜 Архів", "📊 Аналітика", "ℹ️ Довідка"])
 
-    # --- ВКЛАДКА ЗАЯВКА (З АВТОПІДСТАНОВКОЮ s/n) ---
+    # --- ВКЛАДКА ЗАЯВКА ---
     with tab_app:
         st.header("📝 Формування заявки")
         with st.container(border=True):
             app_unit = st.selectbox("1. Заявник:", UNITS, index=UNITS.index(st.session_state.user['unit']) if st.session_state.user['unit'] in UNITS else 0)
             
-            # Динамічний фільтр
             unit_drones = get_unit_drones(app_unit)
             drone_options = [f"{d['Модель БпЛА']} (s/n: {d['s/n']})" for d in unit_drones] if unit_drones else BASE_DRONES
             sel_drones_full = st.multiselect("2. Тип БпЛА:", drone_options)
@@ -172,7 +171,7 @@ else:
             f_txt = f"ЗАЯВКА НА ПОЛІТ\n1. Заявник: в/ч 2196 ({app_unit})\n2. Тип БпЛА: {d_str}\n3. Дата здійснення польоту: {dt_r}\n4. Час роботи: з {a_t1.strftime('%H:%M')} по {a_t2.strftime('%H:%M')}\n5. Населений пункт (маршрут): {app_route}\n6. Висота роботи (м): {a_h}\n7. Радіус роботи (км): {a_r}\n8. Мета польоту: {app_purp}\n9. Контактна особа: {app_cont}"
             st.code(f_txt, language="text")
 
-    # --- ВКЛАДКА ПОЛЬОТИ (З КНОПКОЮ ЗБЕРЕЖЕННЯ) ---
+    # --- ВКЛАДКА ПОЛЬОТИ ---
     with tab_f:
         st.header("Внесення польотів")
         with st.container(border=True):
@@ -208,18 +207,37 @@ else:
         if st.session_state.temp_flights:
             df_t = pd.DataFrame(st.session_state.temp_flights); df_v = df_t[["Взльот", "Посадка", "Дистанція (м)", "Тривалість (хв)", "Номер АКБ", "Цикли АКБ"]]; df_v.columns = ["Зліт", "Посадка", "Відстань", "Хв", "№ АКБ", "Цикли"]; st.dataframe(df_v, use_container_width=True)
             cb1, cb2, cb3 = st.columns(3)
-            if cb1.button("🗑️ Видалити останній"): st.session_state.temp_flights.pop(); st.rerun()
+            if cb1.button("🗑️ Видалити останній"): 
+                st.session_state.temp_flights.pop()
+                st.rerun()
             if cb2.button("💾 Зберегти в Хмару"):
-                df_d = load_data("Drafts"); df_d = df_d[df_d['Оператор'] != st.session_state.user['name']] if not df_d.empty and "Оператор" in df_d.columns else df_d
-                conn.update(worksheet="Drafts", data=pd.concat([df_d, pd.DataFrame(st.session_state.temp_flights).drop(columns=['files'], errors='ignore')], ignore_index=True)); st.success("💾 Збережено!")
+                df_d = load_data("Drafts")
+                if not df_d.empty and "Оператор" in df_d.columns:
+                    df_d = df_d[df_d['Оператор'] != st.session_state.user['name']]
+                conn.update(worksheet="Drafts", data=pd.concat([df_d, pd.DataFrame(st.session_state.temp_flights).drop(columns=['files'], errors='ignore')], ignore_index=True))
+                st.success("💾 Збережено!")
             if cb3.button("🚀 ВІДПРАВИТИ ВСІ ДАНІ"):
-                all_fl = st.session_state.temp_flights; send_telegram_msg(all_fl); final_to_db = []
-                for f in all_fl: row = f.copy(); row.pop('files', None); row["Медіа (статус)"] = "З фото" if f.get('files') else "Текст"; final_to_db.append(row)
-                db_m = load_data("Sheet1"); conn.update(worksheet="Sheet1", data=pd.concat([db_m, pd.DataFrame(final_to_db)], ignore_index=True))
-                df_d = load_data("Drafts"); if not df_d.empty and "Оператор" in df_d.columns: conn.update(worksheet="Drafts", data=df_d[df_d['Оператор'] != st.session_state.user['name']])
-                st.success("✅ Надіслано!"); st.session_state.temp_flights = []; st.rerun()
+                all_fl = st.session_state.temp_flights
+                send_telegram_msg(all_fl)
+                final_to_db = []
+                for f in all_fl:
+                    row = f.copy()
+                    row.pop('files', None)
+                    row["Медіа (статус)"] = "З фото" if f.get('files') else "Текст"
+                    final_to_db.append(row)
+                db_m = load_data("Sheet1")
+                conn.update(worksheet="Sheet1", data=pd.concat([db_m, pd.DataFrame(final_to_db)], ignore_index=True))
+                
+                # ВИПРАВЛЕНО ТУТ: очищення чернетки
+                df_d = load_data("Drafts")
+                if not df_d.empty and "Оператор" in df_d.columns:
+                    conn.update(worksheet="Drafts", data=df_d[df_d['Оператор'] != st.session_state.user['name']])
+                
+                st.success("✅ Надіслано!")
+                st.session_state.temp_flights = []
+                st.rerun()
 
-    # --- ВКЛАДКИ ЦУС, АРХІВ, АНАЛІТИКА, ДОВІДКА (Залишено без змін) ---
+    # --- ВКЛАДКА ЦУС ---
     with tab_cus:
         st.header("📡 Дані для ЦУС")
         if not st.session_state.temp_flights: st.info("Додайте польоти.")
@@ -232,6 +250,7 @@ else:
             def fc(fls): return "\n".join([f"{f['Взльот']} - {f['Посадка']} - {f['Дистанція (м)']} м ({f['Тривалість (хв)']} хв)" for f in fls])
             st.subheader("🌙 До 00:00"); st.code(fc(b_m), language="text"); st.subheader("☀️ Після 00:00"); st.code(fc(a_m), language="text")
 
+    # --- ІНШІ ВКЛАДКИ ---
     with tab_hist:
         st.header("📜 Мій журнал"); df_h = load_data("Sheet1")
         if not df_h.empty and "Оператор" in df_h.columns:
