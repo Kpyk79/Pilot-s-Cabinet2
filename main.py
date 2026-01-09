@@ -22,9 +22,10 @@ TG_CHAT_ID = get_secret("TELEGRAM_CHAT_ID")
 
 # --- 2. КОНСТАНТИ ТА СЛОВНИКИ ---
 UNITS = ["впс Кодима", "віпс Шершенці", "віпс Загнітків", "впс Станіславка", "віпс Тимкове", "віпс Чорна", "впс Окни", "віпс Ткаченкове", "віпс Гулянка", "віпс Новосеменівка", "впс Великокомарівка", "віпс Павлівка", "впс Велика Михайлівка", "віпс Слов'яносербка", "віпс Гребеники", "впс Степанівка", "віпс Кучурган", "віпс Лиманське", "віпс Лучинське", "УПЗ"]
+BASE_DRONES = ["DJI Mavic 3 Pro", "DJI Mavic 3E", "DJI Mavic 3T", "DJI Matrice 30T", "DJI Matrice 300"]
 UKR_MONTHS = {1: "січень", 2: "лютий", 3: "березень", 4: "квітень", 5: "травень", 6: "червень", 7: "липень", 8: "серпень", 9: "вересень", 10: "жовтень", 11: "листопад", 12: "грудень"}
 
-MOTIVATION_MSGS = ["Дякуємо за службу! 🇺🇦", "Все буде Україна! 🇺🇦", "Чудова робота, пілоте!", "Сталевий облік прийняв дані.", "Героям Слава!"]
+MOTIVATION_MSGS = ["Дякуємо за службу! 🇺🇦", "Разом до перемоги! 🇺🇦", "Сталевий облік прийняв дані.", "Героям Слава!"]
 
 # --- 3. ІНІЦІАЛІЗАЦІЯ СТАНУ СЕСІЇ ---
 if 'temp_flights' not in st.session_state: st.session_state.temp_flights = []
@@ -36,20 +37,13 @@ if 'history' not in st.session_state: st.session_state.history = {'name': [], 'p
 if 'last_unit' not in st.session_state: st.session_state.last_unit = UNITS[0]
 
 # --- 4. ДОПОМІЖНІ ФУНКЦІЇ ---
-def smart_time_format(val):
-    """Перетворює 0900 -> 09:00"""
-    digits = "".join(filter(str.isdigit, val))
-    if len(digits) == 4:
-        return f"{digits[:2]}:{digits[2:]}"
-    return val
-
 def smart_time_parse(val):
     val = "".join(filter(str.isdigit, val))
     if not val: return None
     try:
-        if len(val) == 4: h, m = int(val[:2]), int(val[2:])
+        if len(val) <= 2: h, m = int(val), 0
         elif len(val) == 3: h, m = int(val[0]), int(val[1:])
-        elif len(val) <= 2: h, m = int(val), 0
+        elif len(val) == 4: h, m = int(val[:2]), int(val[2:])
         else: return None
         if 0 <= h < 24 and 0 <= m < 60: return d_time(h, m)
     except: pass
@@ -95,8 +89,7 @@ def send_telegram_master(all_fl):
         for i, img in enumerate(all_media[:10]):
             file_key = f"photo{i}"; media_group.append({"type": "photo", "media": f"attach://{file_key}", "caption": report if i == 0 else "", "parse_mode": "Markdown"}); files[file_key] = (img.name, img.getvalue(), img.type)
         requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMediaGroup", data={"chat_id": str(TG_CHAT_ID), "media": json.dumps(media_group)}, files=files)
-    else:
-        requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage", data={"chat_id": str(TG_CHAT_ID), "text": report, "parse_mode": "Markdown"})
+    else: requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage", data={"chat_id": str(TG_CHAT_ID), "text": report, "parse_mode": "Markdown"})
 
 # --- 5. РОБОТА З БАЗОЮ ---
 conn = st.connection("gsheets", type=GSheetsConnection)
@@ -116,52 +109,64 @@ st.markdown("""<style>
     .stButton>button { width: 100%; border-radius: 10px; background-color: #2E7D32; color: white; height: 3.5em; font-weight: bold; border: none; }
     .duration-box { background-color: rgba(46, 125, 50, 0.1); padding: 10px; border-radius: 8px; text-align: center; border: 1px solid #2E7D32; font-size: 1.2em; font-weight: bold; }
     .contact-card { background-color: rgba(46, 125, 50, 0.05); padding: 15px; border-radius: 12px; border-left: 6px solid #2E7D32; margin-bottom: 15px; }
+    .stAlert p { color: inherit !important; }
     </style>""", unsafe_allow_html=True)
 
 # --- 7. SPLASH SCREEN ---
 if not st.session_state.splash_done:
-    st.markdown("<div style='text-align:center; margin-top:20%;'><h1>🛡️ UAV CABINET</h1><p>ЗАВАНТАЖЕННЯ v10.5...</p></div>", unsafe_allow_html=True)
+    st.markdown("<div style='text-align:center; margin-top:20%;'><h1>🛡️ UAV CABINET</h1><p>ВІДНОВЛЕННЯ СИСТЕМ v10.5...</p></div>", unsafe_allow_html=True)
     my_bar = st.progress(0); [ (time.sleep(0.01), my_bar.progress(p+1)) for p in range(100) ]
     st.session_state.splash_done = True; st.rerun()
 
 # --- 8. ІНТЕРФЕЙС ---
-idx = UNITS.index(st.session_state.last_unit) if st.session_state.last_unit in UNITS else 0
+idx_unit = UNITS.index(st.session_state.last_unit) if st.session_state.last_unit in UNITS else 0
 
 if not st.session_state.logged_in:
-    st.markdown("<h2 style='text-align: center;'>🛡️ ВХІД</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 style='text-align: center;'>🛡️ ВХІД У СИСТЕМУ</h2>", unsafe_allow_html=True)
     with st.container(border=True):
-        u = st.selectbox("Підрозділ:", UNITS, index=idx)
+        u = st.selectbox("1. Оберіть Підрозділ:", UNITS, index=idx_unit)
         st.session_state.last_unit = u
+        
+        # ПАМ'ЯТЬ ПРОФІЛЮ
         h_names = st.session_state.history['name']
-        n_hist = st.selectbox("Оберіть з історії (Звання Прізвище):", ["-- Нове введення --"] + h_names) if h_names else None
-        n = st.text_input("Або введіть нове:", value=n_hist if n_hist and n_hist != "-- Нове введення --" else "", placeholder="Прізвище")
+        n_choice = st.selectbox("2. Оберіть профіль з історії:", ["-- Новий користувач --"] + h_names) if h_names else None
+        n = st.text_input("3. Звання та Прізвище:", value=n_choice if n_choice and n_choice != "-- Новий користувач --" else "", placeholder="Напр: сержант Петренко")
+        
         if st.button("УВІЙТИ") and n:
             add_to_history('name', n)
-            st.session_state.logged_in, st.session_state.user = True, {"unit": u, "name": n}; st.rerun()
+            st.session_state.logged_in, st.session_state.user = True, {"unit": u, "name": n}
+            # ЗАВАНТАЖЕННЯ ЧЕРНЕТКИ З ХМАРИ
+            df_drafts = load_data("Drafts", 0)
+            if not df_drafts.empty and "Оператор" in df_drafts.columns:
+                st.session_state.temp_flights = df_drafts[df_drafts['Оператор'] == n].to_dict('records')
+            st.rerun()
 else:
     st.sidebar.markdown(f"👤 **{st.session_state.user['name']}**")
     if st.sidebar.button("Вийти"): st.session_state.logged_in = False; st.session_state.splash_done = False; st.rerun()
 
     tab_f, tab_app, tab_cus, tab_hist, tab_stat, tab_info = st.tabs(["🚀 Польоти", "📋 Помічник формування заявки", "📡 ЦУС", "📜 Архів", "📊 Аналітика", "ℹ️ Довідка"])
 
+    # --- ВКЛАДКА ПОЛЬОТИ ---
     with tab_f:
         st.header("🚀 Внесення польотів")
         with st.container(border=True):
             c1, c2 = st.columns(2); c3, c4 = st.columns(2)
-            d_raw = c1.text_input("Дата польоту (ддммрр)", value=st.session_state.get('cur_date_r', ""), placeholder="Напр: 100126")
-            st.session_state.cur_date_r = d_raw
-            p_date = smart_date_parse(d_raw)
-            if p_date: c1.caption(f"✅ {p_date}")
+            d_inp = c1.text_input("Дата польоту (ддммрр)", value=st.session_state.get('cur_date_raw', ""), placeholder="Напр: 100126")
+            st.session_state.cur_date_raw = d_inp
+            parsed_d = smart_date_parse(d_inp)
+            if parsed_d: c1.success(f"✅ Розпізнано: {parsed_d}")
             
-            # Smart Time Inputs
             t_s_raw = c2.text_input("Зміна з", value=st.session_state.get('cur_t_s', ""), placeholder="0800")
-            st.session_state.cur_t_s = smart_time_format(t_s_raw)
+            st.session_state.cur_t_s = t_s_raw
+            if smart_time_parse(t_s_raw): c2.caption(f"✅ {smart_time_parse(t_s_raw).strftime('%H:%M')}")
+            
             t_e_raw = c3.text_input("Зміна до", value=st.session_state.get('cur_t_e', ""), placeholder="2000")
-            st.session_state.cur_t_e = smart_time_format(t_e_raw)
+            st.session_state.cur_t_e = t_e_raw
+            if smart_time_parse(t_e_raw): c3.caption(f"✅ {smart_time_parse(t_e_raw).strftime('%H:%M')}")
             
             h_routes = st.session_state.history['route']
             r_hist = st.selectbox("Історія маршрутів:", ["-- Новий --"] + h_routes)
-            m_route = c4.text_input("Маршрут завдання:", value=r_hist if r_hist != "-- Новий --" else "")
+            m_route = c4.text_input("Маршрут завдання:", value=r_hist if r_hist != "-- Новий --" else "", placeholder="Напрямок")
             
             u_d = get_unit_drones(st.session_state.user['unit'])
             d_opts = [f"{d['Модель БпЛА']} (s/n: {d['s/n']})" for d in u_d] if u_d else BASE_DRONES
@@ -170,11 +175,13 @@ else:
         with st.expander("➕ ДОДАТИ НОВИЙ ВИЛІТ", expanded=True):
             rt = st.session_state.reset_trigger
             col1, col2 = st.columns(2)
-            t_z_raw = col1.text_input("Зліт", key=f"z_{rt}", placeholder="0900")
-            t_p_raw = col2.text_input("Посадка", key=f"p_{rt}", placeholder="0930")
+            t_z = col1.text_input("Зліт", key=f"z_{rt}", placeholder="0900")
+            if smart_time_parse(t_z): col1.success(f"✅ Розпізнано: {smart_time_parse(t_z).strftime('%H:%M')}")
             
-            # Parse times
-            p_z, p_p = smart_time_parse(t_z_raw), smart_time_parse(t_p_raw)
+            t_p = col2.text_input("Посадка", key=f"p_{rt}", placeholder="0930")
+            if smart_time_parse(t_p): col2.success(f"✅ Розпізнано: {smart_time_parse(t_p).strftime('%H:%M')}")
+            
+            p_z, p_p = smart_time_parse(t_z), smart_time_parse(t_p)
             dur = calculate_duration(p_z, p_p) if p_z and p_p else 0
             st.markdown(f"<div class='duration-box'>⏳ {dur} хв</div>", unsafe_allow_html=True)
             
@@ -185,13 +192,13 @@ else:
             
             h_notes = st.session_state.history['note']
             n_hist_note = st.selectbox("Історія приміток:", ["-- Нова --"] + h_notes)
-            f_note = st.text_area("Примітки", key=f"n_{rt}", value=n_hist_note if n_hist_note != "-- Нова --" else "", placeholder="Погодні умови...")
+            f_note = st.text_area("Примітки", key=f"n_{rt}", value=n_hist_note if n_hist_note != "-- Нова --" else "", placeholder="Напр: Польоти не здійснювались...")
             f_imgs = st.file_uploader("📸 Скріншоти", accept_multiple_files=True, key=f"u_{st.session_state.uploader_key}")
 
-            if st.button("✅ ДОДАТИ У СПИСОК") and p_z and p_p and p_date:
+            if st.button("✅ ДОДАТИ У СПИСОК") and p_z and p_p and parsed_d:
                 add_to_history('route', m_route); add_to_history('note', f_note)
                 st.session_state.temp_flights.append({
-                    "Дата": p_date, "Час завдання": f"{st.session_state.cur_t_s} - {st.session_state.cur_t_e}",
+                    "Дата": parsed_d, "Час завдання": f"{t_s_raw} - {t_e_raw}",
                     "Підрозділ": st.session_state.user['unit'], "Оператор": st.session_state.user['name'], "Дрон": sel_drone,
                     "Маршрут": m_route, "Зліт": p_z.strftime("%H:%M"), "Посадка": p_p.strftime("%H:%M"),
                     "Тривалість (хв)": dur, "Дистанція (м)": f_dst, "Номер АКБ": f_akb, "Цикли АКБ": f_cyc, "Результат": "Виконано", "Примітки": f_note, "files": f_imgs
@@ -199,47 +206,55 @@ else:
                 st.session_state.reset_trigger += 1; st.session_state.uploader_key += 1; st.rerun()
 
         if st.session_state.temp_flights:
-            st.dataframe(pd.DataFrame(st.session_state.temp_flights)[["Зліт", "Посадка", "Тривалість (хв)", "Номер АКБ"]], use_container_width=True)
-            b1, b2 = st.columns(2)
-            if b1.button("💾 Зберегти в Хмару"):
-                try:
-                    df_d = load_data("Drafts", 0)
-                    if not df_d.empty and "Оператор" in df_d.columns:
-                        df_d = df_d[df_d['Оператор'] != st.session_state.user['name']]
-                    conn.update(worksheet="Drafts", data=pd.concat([df_d, pd.DataFrame(st.session_state.temp_flights).drop(columns=['files'], errors='ignore')], ignore_index=True))
-                    st.success("💾 Чернетка збережена!")
-                except: st.error("Помилка збереження")
-            if b2.button("🚀 ВІДПРАВИТИ ВСІ ДАНІ"):
+            st.dataframe(pd.DataFrame(st.session_state.temp_flights)[["Зліт", "Посадка", "Тривалість (хв)", "Номер АКБ", "Цикли АКБ"]], use_container_width=True)
+            b_c1, b_c2, b_c3 = st.columns(3)
+            
+            if b_c1.button("🗑️ Видалити останній"): st.session_state.temp_flights.pop(); st.rerun()
+            
+            if b_c2.button("💾 Зберегти в Хмару"):
+                df_d = load_data("Drafts", 0)
+                if not df_d.empty and "Оператор" in df_d.columns:
+                    df_d = df_d[df_d['Оператор'] != st.session_state.user['name']]
+                # Зберігаємо також цикли АКБ
+                df_to_save = pd.DataFrame(st.session_state.temp_flights).drop(columns=['files'], errors='ignore')
+                conn.update(worksheet="Drafts", data=pd.concat([df_d, df_to_save], ignore_index=True))
+                st.success("💾 Чернетка збережена в хмару!")
+
+            if b_c3.button("🚀 ВІДПРАВИТИ ВСІ ДАНІ"):
                 db = load_data("Sheet1", 0)
-                final = [{k: v for k, v in f.items() if k != 'files'} for f in st.session_state.temp_flights]
+                final = [ {k: v for k, v in f.items() if k != 'files'} for f in st.session_state.temp_flights ]
                 conn.update(worksheet="Sheet1", data=pd.concat([db, pd.DataFrame(final)], ignore_index=True))
                 send_telegram_master(st.session_state.temp_flights)
+                # Очищення хмари після відправки
+                df_d = load_data("Drafts", 0)
+                if not df_d.empty and "Оператор" in df_d.columns:
+                    conn.update(worksheet="Drafts", data=df_d[df_d['Оператор'] != st.session_state.user['name']])
                 st.success(random.choice(MOTIVATION_MSGS))
                 st.session_state.temp_flights = []; time.sleep(2); st.rerun()
 
+    # --- ВКЛАДКА ПОМІЧНИК ЗАЯВКИ ---
     with tab_app:
-        st.header("📋 Помічник заявки")
+        st.header("📋 Помічник формування заявки")
         with st.container(border=True):
-            a_u = st.selectbox("Заявник:", UNITS, index=idx)
+            a_u = st.selectbox("Заявник:", UNITS, index=idx_unit)
             u_db = get_unit_drones(a_u)
             d_o = [f"{d['Модель БпЛА']} (s/n: {d['s/n']})" for d in u_db] if u_db else BASE_DRONES
             sel_d = st.multiselect("Типи БпЛА:", d_o)
             a_dt = st.date_input("Дати:", value=(datetime.now(), datetime.now() + timedelta(days=1)))
-            a_t1 = st.text_input("Час з:", "08:00"); a_t2 = st.text_input("Час до:", "20:00")
-            ar_h = st.selectbox("Історія (маршрут):", ["-- Новий --"] + st.session_state.history['route'])
+            a_t1 = st.text_input("Час з:", "0800"); a_t2 = st.text_input("Час до:", "2000")
+            h_r = st.session_state.history['route']; ar_h = st.selectbox("Історія (маршрут):", ["-- Новий --"] + h_r)
             app_r = st.text_area("Маршрут:", value=ar_h if ar_h != "-- Новий --" else "")
             
-            # Контакти
-            app_contact_name = st.text_input("Контактна особа (Прізвище):", value=st.session_state.user['name'])
-            h_p = st.session_state.history['phone']
-            p_h_choice = st.selectbox("Минулі телефони:", ["-- Новий --"] + h_phone) if 'h_phone' in locals() else st.selectbox("Минулі телефони:", ["-- Новий --"] + h_p)
-            app_phone = st.text_input("Телефон для зв'язку:", value=p_h_choice if p_h_choice != "-- Новий --" else "")
+            app_contact_name = st.text_input("9. Контактна особа (Прізвище):", value=st.session_state.user['name'])
+            h_p = st.session_state.history['phone']; p_h_choice = st.selectbox("Історія телефонів:", ["-- Новий --"] + h_p)
+            app_phone = st.text_input("Номер телефону:", value=p_h_choice if p_h_choice != "-- Новий --" else "", placeholder="+380...")
             
             if st.button("✨ СФОРМУВАТИ"):
                 add_to_history('phone', app_phone)
                 dt_str = f"з {a_dt[0].strftime('%d.%m.%Y')} по {a_dt[1].strftime('%d.%m.%Y')}" if isinstance(a_dt, tuple) and len(a_dt)==2 else a_dt[0].strftime('%d.%m.%Y')
-                st.code(f"ЗАЯВКА\n1. Заявник: в/ч 2196 ({a_u})\n2. Тип: {sel_d}\n3. Дати: {dt_str}\n4. Час: {a_t1}-{a_t2}\n5. Маршрут: {app_r}\n9. Контактна особа: {app_contact_name}, тел: {app_phone}", language="text")
+                st.code(f"ЗАЯВКА НА ПОЛІТ\n1. Заявник: в/ч 2196 ({a_u})\n2. Тип: {sel_d}\n3. Дати: {dt_str}\n4. Час: {a_t1}-{a_t2}\n5. Маршрут: {app_r}\n9. Контактна особа: {app_contact_name}, тел: {app_phone}", language="text")
 
+    # --- ВКЛАДКА АНАЛІТИКА (БЕЗ ПОМИЛОК) ---
     with tab_stat:
         st.header("📊 Аналітика")
         df_s = load_data("Sheet1")
@@ -247,14 +262,14 @@ else:
             df_p = df_s[df_s['Оператор'] == st.session_state.user['name']].copy()
             if not df_p.empty:
                 df_p['dt'] = pd.to_datetime(df_p['Дата'], format='%d.%m.%Y', errors='coerce')
-                # Безпечне групування
-                df_p['Рік'] = df_p['dt'].dt.year; df_p['Місяць_ном'] = df_p['dt'].dt.month
-                res = df_p.groupby(['Рік', 'Місяць_ном']).agg(Вильоти=('Дата', 'count'), Наліт_хв=('Тривалість (хв)', 'sum')).reset_index()
-                res['Місяць'] = res.apply(lambda x: f"{UKR_MONTHS.get(int(x['Місяць_ном']), '???')} {int(x['Рік'])}", axis=1)
-                st.table(res[['Місяць', 'Вильоти', 'Наліт_хв']])
+                df_p['Year'] = df_p['dt'].dt.year; df_p['Month'] = df_p['dt'].dt.month
+                rs = df_p.groupby(['Year', 'Month']).agg(Вильоти=('Дата', 'count'), Наліт_хв=('Тривалість (хв)', 'sum')).reset_index()
+                rs['Місяць'] = rs.apply(lambda x: f"{UKR_MONTHS.get(int(x['Month']), '???')} {int(x['Year'])}", axis=1)
+                st.table(rs[['Місяць', 'Вильоти', 'Наліт_хв']])
 
+    # --- ВКЛАДКА ДОВІДКА ---
     with tab_info:
-        st.header("ℹ️ Довідка")
+        st.header("ℹ️ Довідкова інформація")
         c1, c2, c3 = st.columns(3)
         with c1: st.markdown("<div class='contact-card'><b>🎓 Олександр</b><br>Інструктор<br>+380502310609</div>", unsafe_allow_html=True)
         with c2: st.markdown("<div class='contact-card'><b>🔧 Сергій</b><br>Технік<br>+380997517054</div>", unsafe_allow_html=True)
