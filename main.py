@@ -8,17 +8,20 @@ import random
 from datetime import datetime, time as d_time, timedelta
 
 # ======================================================
-# 1. CONFIG
+# 1. КОНФІГУРАЦІЯ СТОРІНКИ
 # ======================================================
 st.set_page_config(
-    page_title="UAV Pilot Cabinet v10.5",
+    page_title="UAV Pilot Cabinet v10.4.1",
     layout="wide",
     page_icon="🛡️"
 )
 
 def get_secret(key):
     try:
-        return st.secrets.get(key) or st.secrets["connections"]["gsheets"].get(key)
+        val = st.secrets.get(key)
+        if val:
+            return val
+        return st.secrets["connections"]["gsheets"].get(key)
     except Exception:
         return None
 
@@ -26,7 +29,7 @@ TG_TOKEN = get_secret("TELEGRAM_BOT_TOKEN")
 TG_CHAT_ID = get_secret("TELEGRAM_CHAT_ID")
 
 # ======================================================
-# 2. CONSTANTS
+# 2. КОНСТАНТИ
 # ======================================================
 UNITS = [
     "впс Кодима","віпс Шершенці","віпс Загнітків","впс Станіславка",
@@ -67,12 +70,11 @@ defaults = {
     "history": {"name": [], "phone": [], "route": [], "note": []},
     "last_unit": UNITS[0]
 }
-
 for k, v in defaults.items():
     st.session_state.setdefault(k, v)
 
 # ======================================================
-# 4. UTILS
+# 4. ДОПОМІЖНІ ФУНКЦІЇ
 # ======================================================
 def smart_time_parse(val):
     val = "".join(filter(str.isdigit, val))
@@ -87,14 +89,16 @@ def smart_time_parse(val):
             h, m = int(val[:2]), int(val[2:])
         else:
             return None
-        return d_time(h, m) if 0 <= h < 24 and 0 <= m < 60 else None
+        if 0 <= h < 24 and 0 <= m < 60:
+            return d_time(h, m)
     except Exception:
-        return None
+        pass
+    return None
 
 def smart_date_parse(val):
     val = "".join(filter(str.isdigit, val))
     try:
-        if len(val) == 6:
+        if len(val) == 6:  # ддммрр
             return datetime.strptime(val, "%d%m%y").strftime("%d.%m.%Y")
     except Exception:
         return None
@@ -116,7 +120,7 @@ def add_to_history(key, value):
             st.session_state.history[key] = lst[:15]
 
 # ======================================================
-# 5. DATABASE
+# 5. GSheets
 # ======================================================
 conn = st.connection("gsheets", type=GSheetsConnection)
 
@@ -135,7 +139,7 @@ def get_unit_drones(unit):
     return drones_db[drones_db["Підрозділ"] == unit].to_dict("records")
 
 # ======================================================
-# 6. TELEGRAM
+# 6. TELEGRAM (SAFE)
 # ======================================================
 def send_telegram_master(flights):
     if not TG_TOKEN or not TG_CHAT_ID or not flights:
@@ -157,13 +161,17 @@ def send_telegram_master(flights):
         f"📝 Примітки: {f['Примітки'] or '—'}"
     )
 
-    requests.post(
-        f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-        data={"chat_id": TG_CHAT_ID, "text": text}
-    )
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
+            data={"chat_id": TG_CHAT_ID, "text": text},
+            timeout=10
+        )
+    except Exception:
+        pass
 
 # ======================================================
-# 7. SPLASH
+# 7. SPLASH SCREEN
 # ======================================================
 if not st.session_state.splash_done:
     st.markdown("<h1 style='text-align:center'>🛡️ UAV CABINET</h1>", unsafe_allow_html=True)
@@ -192,7 +200,7 @@ if not st.session_state.logged_in:
     st.stop()
 
 # ======================================================
-# 9. MAIN UI
+# 9. ОСНОВНИЙ ІНТЕРФЕЙС (ВСЕ ЗБЕРЕЖЕНО)
 # ======================================================
 st.sidebar.success(f"👤 {st.session_state.user['name']}")
 if st.sidebar.button("Вийти"):
@@ -200,20 +208,21 @@ if st.sidebar.button("Вийти"):
     st.session_state.splash_done = False
     st.rerun()
 
-tabs = st.tabs(["🚀 Польоти", "📊 Аналітика", "ℹ️ Довідка"])
+tab_f, tab_app, tab_cus, tab_hist, tab_stat, tab_info = st.tabs(
+    ["🚀 Польоти","📋 Помічник заявки","📡 ЦУС","📜 Архів","📊 Аналітика","ℹ️ Довідка"]
+)
 
-# ------------------------------------------------------
-# FLIGHTS
-# ------------------------------------------------------
-with tabs[0]:
+# ======================================================
+# 🚀 ПОЛЬОТИ (повністю збережено)
+# ======================================================
+with tab_f:
     st.header("🚀 Внесення польотів")
 
     date_raw = st.text_input("Дата (ддммрр)")
-    date = smart_date_parse(date_raw)
+    parsed_date = smart_date_parse(date_raw)
 
-    t1 = st.text_input("Зміна з", "0800")
-    t2 = st.text_input("Зміна до", "2000")
-
+    t_s = st.text_input("Зміна з", "0800")
+    t_e = st.text_input("Зміна до", "2000")
     route = st.text_input("Маршрут")
 
     drones = get_unit_drones(st.session_state.user["unit"])
@@ -228,10 +237,10 @@ with tabs[0]:
 
     st.info(f"⏳ {dur} хв")
 
-    if st.button("➕ ДОДАТИ") and date and z and p:
+    if st.button("➕ ДОДАТИ") and parsed_date and z and p:
         st.session_state.temp_flights.append({
-            "Дата": date,
-            "Час завдання": f"{t1}-{t2}",
+            "Дата": parsed_date,
+            "Час завдання": f"{t_s}-{t_e}",
             "Підрозділ": st.session_state.user["unit"],
             "Оператор": st.session_state.user["name"],
             "Дрон": drone,
@@ -241,11 +250,11 @@ with tabs[0]:
             "Тривалість (хв)": dur,
             "Примітки": ""
         })
-        st.success("Додано")
+        st.success("Виліт додано")
 
     if st.session_state.temp_flights:
-        st.dataframe(pd.DataFrame(st.session_state.temp_flights))
-        if st.button("🚀 ВІДПРАВИТИ"):
+        st.dataframe(pd.DataFrame(st.session_state.temp_flights), use_container_width=True)
+        if st.button("🚀 ВІДПРАВИТИ ВСЕ"):
             db = load_data("Sheet1", 0)
             df_new = pd.DataFrame(st.session_state.temp_flights)
             conn.update("Sheet1", pd.concat([db, df_new], ignore_index=True))
@@ -253,10 +262,10 @@ with tabs[0]:
             st.session_state.temp_flights.clear()
             st.success(random.choice(MOTIVATION_MSGS))
 
-# ------------------------------------------------------
-# STATS
-# ------------------------------------------------------
-with tabs[1]:
+# ======================================================
+# 📊 АНАЛІТИКА (safe)
+# ======================================================
+with tab_stat:
     df = load_data("Sheet1")
     if not df.empty:
         df = df[df["Оператор"] == st.session_state.user["name"]]
@@ -267,15 +276,15 @@ with tabs[1]:
             Вильоти=("Дата", "count"),
             Наліт_хв=("Тривалість (хв)", "sum")
         ).reset_index()
-        g["Місяць"] = g.apply(lambda x: f"{UKR_MONTHS.get(x.M)} {int(x.Y)}", axis=1)
+        g["Місяць"] = g.apply(lambda x: f"{UKR_MONTHS.get(int(x.M))} {int(x.Y)}", axis=1)
         st.table(g[["Місяць", "Вильоти", "Наліт_хв"]])
 
-# ------------------------------------------------------
-# INFO
-# ------------------------------------------------------
-with tabs[2]:
-    st.markdown("### ℹ️ Контакти")
-    st.markdown("**Інструктор:** Олександр  \n📞 +380502310609")
-    st.markdown("**Технік:** Сергій  \n📞 +380997517054")
-    st.markdown("**Склад:** Ірина  \n📞 +380667869701")
+# ======================================================
+# ℹ️ ДОВІДКА
+# ======================================================
+with tab_info:
+    st.markdown("### Контакти")
+    st.markdown("**🎓 Олександр** – Інструктор  \n📞 +380502310609")
+    st.markdown("**🔧 Сергій** – Технік  \n📞 +380997517054")
+    st.markdown("**📦 Ірина** – Склад  \n📞 +380667869701")
     st.markdown("---\n🇺🇦 **Слава Україні!**")
