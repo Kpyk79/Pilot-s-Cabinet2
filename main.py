@@ -331,16 +331,23 @@ else:
             df_s['Дата_dt'] = pd.to_datetime(df_s['Дата'], format='%d.%m.%Y', errors='coerce')
             df_s = df_s.dropna(subset=['Дата_dt'])
             if not df_s.empty:
+                # ГАРАНТОВАНЕ СТВОРЕННЯ СТОВПЦІВ ДЛЯ ГРУПУВАННЯ
                 df_s['Рік'] = df_s['Дата_dt'].dt.year
                 df_s['Місяць_№'] = df_s['Дата_dt'].dt.month
+                
+                # ГРУПУВАННЯ ЗА ІМЕНАМИ СТОВПЦІВ
                 rs = df_s.groupby(['Рік', 'Місяць_№']).agg(
                     Польоти=('Дата', 'count'), 
                     Затримання=('Результат', lambda x: (x == "Затримання").sum()),
                     Хв=('Тривалість (хв)', 'sum')
                 ).reset_index()
+                
                 rs['Період'] = rs.apply(lambda x: f"{UKR_MONTHS.get(int(x['Місяць_№']), '???')} {int(x['Рік'])}", axis=1)
                 rs['Наліт'] = rs['Хв'].apply(format_to_time_str)
-                st.table(rs[['Період', 'Польоти', 'Затримання', 'Наліт']].sort_values(by=['Рік', 'Місяць_№'], ascending=False))
+                
+                # ТЕПЕР СОРТУВАННЯ ГАРАНТОВАНО ПРАЦЮЄ
+                rs = rs.sort_values(by=['Рік', 'Місяць_№'], ascending=False)
+                st.table(rs[['Період', 'Польоти', 'Затримання', 'Наліт']])
 
     with tab_info:
         st.header("ℹ️ Довідка")
