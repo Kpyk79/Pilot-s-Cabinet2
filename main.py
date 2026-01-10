@@ -1,275 +1,987 @@
-from flask import Flask, render_template, request, jsonify, session
-from datetime import datetime
+#!/usr/bin/env python3
+import streamlit as st
+from streamlit_gsheets import GSheetsConnection
+import pandas as pd
+import requests
+import time
+from datetime import datetime, time as d_time, timedelta
 import json
+import traceback
 import os
+from gspread.exceptions import APIError
 
-app = Flask(__name__)
-app.secret_key = 'your-secret-key-here'  # Змініть на свій ключ
+# --- 1. КОНФІГУРАЦІЯ ---
+st.set_page_config(
+    page_title="Кабінет пілота БПЛА версії 7.2",
+    layout="wide",
+    page_icon="🛡️"
+)
 
-# ============ МОДЕЛИ ДАНИХ ============
-class DroneData:
-    def __init__(self, model, serial):
-        self.model = model
-        self.serial = serial
-        self.timestamp = datetime.now().isoformat()
-    
-    def to_dict(self):
-        return {
-            'model': self.model,
-            'serial': self.serial,
-            'timestamp': self.timestamp
-        }
-
-class FlightData:
-    def __init__(self, drone_model, serial, location, duration, altitude, notes=""):
-        self.id = int(datetime.now().timestamp() * 1000)
-        self.drone = drone_model
-        self.serial = serial
-        self.location = location
-        self.duration = int(duration)
-        self.altitude = int(altitude)
-        self.notes = notes
-        self.timestamp = datetime.now().strftime('%d.%m.%Y %H:%M:%S')
-    
-    def to_dict(self):
-        return {
-            'id': self.id,
-            'drone': self.drone,
-            'serial': self.serial,
-            'location': self.location,
-            'duration': self.duration,
-            'altitude': self.altitude,
-            'notes': self.notes,
-            'timestamp': self.timestamp
-        }
-
-# ============ МАРШУТИ СТОРІНОК ============
-@app.route('/')
-def index():
-    return render_template('index.html')
-
-# ============ API: АУТЕНТИФІКАЦІЯ ============
-@app.route('/api/login', methods=['POST'])
-def api_login():
-    """Вхід користувача"""
+def get_secret(key):
+    """Отримати секрет зі st.secrets"""
+    val = None
     try:
-        data = request.get_json()
-        
-        # Валідація
-        required_fields = ['name', 'email', 'password']
-        if not all(field in data for field in required_fields):
-            return jsonify({'success': False, 'message': 'Заповніть усі обов\'язкові поля'}), 400
-        
-        if '@' not in data['email']:
-            return jsonify({'success': False, 'message': 'Невірний формат email'}), 400
-        
-        # Зберегти в сесію
-        session['user'] = {
-            'name': data['name'].strip(),
-            'email': data['email'].strip(),
-            'phone': data.get('phone', '').strip()
-        }
-        
-        return jsonify({
-            'success': True,
-            'message': f'Ласкаво просимо, {data["name"]}!',
-            'user': session['user']
-        })
-    
-    except Exception as e:
-        return jsonify({'success': False, 'message': f'Помилка: {str(e)}'}), 500
-
-@app.route('/api/logout', methods=['POST'])
-def api_logout():
-    """Вихід користувача"""
-    session.clear()
-    return jsonify({'success': True, 'message': 'Ви вийшли з системи'})
-
-# ============ API: ДРОНИ ============
-@app.route('/api/drones', methods=['GET'])
-def get_drones():
-    """Отримати список дронів для сеансу"""
-    drones = session.get('session_drones', [])
-    return jsonify({'drones': drones})
-
-@app.route('/api/drones', methods=['POST'])
-def add_drone():
-    """Додати дрон до сеансу"""
+        val = st.secrets.get(key)
+    except Exception:
+        pass
+    if val:
+        return val
     try:
-        data = request.get_json()
-        
-        if not data.get('model') or not data.get('serial'):
-            return jsonify({'success': False, 'message': 'Модель і серійний номер обов\'язкові'}), 400
-        
-        drone = DroneData(data['model'], data['serial'])
-        
-        # Додати до сеансу
-        session_drones = session.get('session_drones', [])
-        
-        # Перевірити, чи такий дрон вже існує
-        exists = any(d['model'] == drone.model and d['serial'] == drone.serial for d in session_drones)
-        if not exists:
-            session_drones.append(drone.to_dict())
-            session['session_drones'] = session_drones
-        
-        return jsonify({
-            'success': True,
-            'message': f'Дрон {data["model"]} додано',
-            'drone': drone.to_dict()
-        })
-    
-    except Exception as e:
-        return jsonify({'success': False, 'message': f'Помилка: {str(e)}'}), 500
+        return st.secrets["connections"]["gsheets"].get(key)
+    except Exception:
+        return None
 
-# ============ API: ПОЛЬОТИ ============
-@app.route('/api/flights', methods=['GET'])
-def get_flights():
-    """Отримати всі польоти"""
-    flights = session.get('flights', [])
-    return jsonify({'flights': flights})
+TG_TOKEN = get_secret("ТОКЕН_БОТА_ТЕЛЕГРАМ")
+TG_CHAT_ID = get_secret("ІДЕНТИФІКАТОР_ТЕЛЕГРАМ_ЧАТУ")
+OUTPUT_ERROR_PATH = os.environ.get(
+    "ШЛЯХ_ДО_ПОМИЛКИ_GSPREAD", "/tmp/gspread_api_error.json"
+)
 
-@app.route('/api/flights', methods=['POST'])
-def add_flight():
-    """Додати новий політ"""
+# --- 2. КОНСТАНТИ ---
+UNITS = [
+    "впс Кодима", "віпс Шершенці", "віпс Загнітків", "впс Станіславка",
+    "віпс Тимкове", "віпс Чорна", "впс Окни", "віпс Ткаченкове",
+    "віпс Гулянка", "віпс Новосеменівка", "впс Великокомарівка",
+    "віпс Павлівка", "віпс Велика Михайлівка", "віпс Слов'яносербка",
+    "віпс Гребеники", "впс Степанівка", "впс Кучурган",
+    "впс Лиманське", "впс Лучинське", "УПЗ"
+]
+ADMIN_PASSWORD = "admin_secret"
+UKR_MONTHS = {
+    1: "січень", 2: "лютий", 3: "березень", 4: "квітень",
+    5: "травень", 6: "червень", 7: "липень", 8: "серпень",
+    9: "вересень", 10: "жовтень", 11: "листопад", 12: "грудень"
+}
+
+# --- 3. ФУНКЦІЇ ---
+def smart_time_parse(val):
+    if not val:
+        return None
+    s = "".join(filter(str.isdigit, str(val)))
+    if not s:
+        return None
     try:
-        data = request.get_json()
-        
-        # Валідація
-        required_fields = ['drone_model', 'serial', 'location', 'duration', 'altitude']
-        if not all(field in data for field in required_fields):
-            return jsonify({'success': False, 'message': 'Заповніть усі обов\'язкові поля'}), 400
-        
-        flight = FlightData(
-            drone_model=data['drone_model'],
-            serial=data['serial'],
-            location=data['location'],
-            duration=data['duration'],
-            altitude=data['altitude'],
-            notes=data.get('notes', '')
+        if len(s) <= 2:
+            h, m = int(s), 0
+        elif len(s) == 3:
+            h, m = int(s[0]), int(s[1:])
+        elif len(s) == 4:
+            h, m = int(s[:2]), int(s[2:])
+        else:
+            return None
+        if 0 <= h < 24 and 0 <= m < 60:
+            return d_time(h, m)
+    except Exception:
+        pass
+    return None
+
+def calculate_duration(start, end):
+    s = start.hour * 60 + start.minute
+    e = end.hour * 60 + end.minute
+    d = e - s
+    return d if d >= 0 else d + 1440
+
+def format_to_time_str(total_minutes):
+    try:
+        hours = total_minutes // 60
+        minutes = total_minutes % 60
+        return f"{int(hours):02d}:{int(minutes):02d}"
+    except Exception:
+        return "00:00"
+
+def save_api_error(e: APIError, path: str = OUTPUT_ERROR_PATH):
+    try:
+        resp = getattr(e, "response", None)
+        status = getattr(resp, "status_code", None)
+        headers = getattr(resp, "headers", None)
+        text = None
+        try:
+            text = resp.text if resp is not None else None
+        except Exception:
+            text = "<не вдалося прочитати response.text>"
+    except Exception as inner:
+        status = None
+        headers = None
+        text = f"<помилка під час вилучення відповіді: {inner}>"
+
+    payload = {
+        "status_code": status,
+        "headers": dict(headers) if headers else None,
+        "text": text,
+        "repr": repr(e),
+    }
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        print(f"gspread APIError saved to: {path}")
+    except Exception as write_err:
+        print(f"Failed to write API error file: {write_err}")
+        print((text or "")[:2000])
+
+def normalize_df_columns(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+    cols = [str(c).strip().replace('\ufeff', '') for c in df.columns]
+    df = df.copy()
+    df.columns = cols
+    return df
+
+def safe_conn_update(conn, **kwargs):
+    try:
+        return conn.update(**kwargs)
+    except APIError as e:
+        save_api_error(e)
+        st.error("Помилка при збереженні в Google Sheets. Деталі збережені в " + OUTPUT_ERROR_PATH)
+        raise
+    except Exception:
+        traceback.print_exc()
+        st.error("Несподівана помилка при зверненні до Google Sheets. Перевірте логи.")
+        raise
+
+def load_data(ws="Sheet1"):
+    try:
+        df = conn.read(worksheet=ws, ttl=0)
+        if df is None or df.empty:
+            return pd.DataFrame()
+        df = normalize_df_columns(df)
+        for c in df.select_dtypes(include=[object]).columns:
+            df[c] = df[c].astype(str).str.strip()
+        return df.dropna(how="all")
+    except Exception:
+        traceback.print_exc()
+        return pd.DataFrame()
+
+def write_df_to_sheet(sheet_name: str, new_df: pd.DataFrame, remove_operator: str | None = None):
+    new_df = normalize_df_columns(new_df)
+    try:
+        existing = load_data(sheet_name)
+    except Exception:
+        existing = pd.DataFrame()
+
+    if remove_operator and not new_df.empty and 'Оператор' in new_df.columns:
+        op = remove_operator.strip().lower()
+        if not existing.empty and 'Оператор' in existing.columns:
+            existing = existing[~(
+                existing['Оператор'].astype(str).str.strip().str.lower() == op
+            )]
+
+    if existing.empty:
+        out = new_df.reset_index(drop=True)
+    else:
+        out = pd.concat([existing, new_df], ignore_index=True, sort=False).reset_index(drop=True)
+
+    safe_conn_update(conn, worksheet=sheet_name, data=out)
+
+def save_remembered_user(name: str, unit: str):
+    try:
+        df = pd.DataFrame([{
+            "key": "last_user",
+            "Оператор": name.strip(),
+            "Підрозділ": unit.strip()
+        }])
+        safe_conn_update(conn, worksheet="Settings", data=df)
+    except Exception:
+        traceback.print_exc()
+
+def load_remembered_user():
+    try:
+        df = load_data("Settings")
+        if not df.empty and 'key' in df.columns:
+            row = df[df['key'] == 'last_user']
+            if not row.empty:
+                return (
+                    row.iloc[0].get('Оператор', ''),
+                    row.iloc[0].get('Підрозділ', UNITS[0])
+                )
+            row = df.iloc[0]
+            return (
+                row.get('Оператор', ''),
+                row.get('Підрозділ', UNITS[0])
+            )
+    except Exception:
+        traceback.print_exc()
+    return '', UNITS[0]
+
+def get_drones_for_unit(unit):
+    try:
+        df = load_data("DronesDB")
+        if df.empty:
+            return []
+        unit_col = None
+        for c in df.columns:
+            if c.lower().strip() in ['підрозділ', 'unit', 'pidrozdil', 'підрозділ:']:
+                unit_col = c
+                break
+        if unit_col is None and 'Підрозділ' in df.columns:
+            unit_col = 'Підрозділ'
+        if unit_col is None:
+            unit_col = df.columns[0]
+
+        unit_drones = df[df[unit_col].astype(str).str.strip() == unit]
+        if unit_drones.empty:
+            return []
+
+        model_col = None
+        sn_col = None
+        for c in df.columns:
+            cl = c.lower()
+            if 'модел' in cl or 'model' in cl:
+                model_col = c
+            if 's/n' in cl or cl in ['sn', 's_n', 'serial']:
+                sn_col = c
+
+        if model_col is None:
+            for alt in ['Модель БпЛА', 'Модель']:
+                if alt in df.columns:
+                    model_col = alt
+                    break
+        if sn_col is None:
+            for alt in ['S/N', 'SN', 's/n', 's_n', 'S N']:
+                if alt in df.columns:
+                    sn_col = alt
+                    break
+
+        drones_list = []
+        for _, row in unit_drones.iterrows():
+            model = row.get(model_col, '') if model_col else ''
+            sn = row.get(sn_col, '') if sn_col else ''
+            model = '' if pd.isna(model) else str(model).strip()
+            sn = '' if pd.isna(sn) else str(sn).strip()
+            if model:
+                display = f"{model} (S/N: {sn})" if sn else model
+                drones_list.append(display)
+        return drones_list
+    except Exception:
+        traceback.print_exc()
+        return []
+
+def send_telegram_msg(all_fl):
+    if not TG_TOKEN or not TG_CHAT_ID:
+        return
+
+    first = all_fl[0]
+    flights_details = []
+    for i, f in enumerate(all_fl):
+        txt = (
+            f"{i+1}. {f['Взльот']}-{f['Посадка']} "
+            f"({f['Тривалість (хв)']} хв)\nРезультат: {f['Результат']}"
         )
-        
-        # Додати до сеансу
-        flights = session.get('flights', [])
-        flights.append(flight.to_dict())
-        session['flights'] = flights
-        
-        return jsonify({
-            'success': True,
-            'message': 'Зліт успішно додано',
-            'flight': flight.to_dict()
-        })
-    
-    except Exception as e:
-        return jsonify({'success': False, 'message': f'Помилка: {str(e)}'}), 500
+        if f.get('Примітки'):
+            txt += f"\nПримітки: {f['Примітки']}"
+        flights_details.append(txt)
+    flights_txt = "\n".join(flights_details)
 
-@app.route('/api/flights/<int:flight_id>', methods=['DELETE'])
-def delete_flight(flight_id):
-    """Видалити політ"""
-    try:
-        flights = session.get('flights', [])
-        flights = [f for f in flights if f['id'] != flight_id]
-        session['flights'] = flights
-        
-        return jsonify({'success': True, 'message': 'Зліт видалено'})
-    
-    except Exception as e:
-        return jsonify({'success': False, 'message': f'Помилка: {str(e)}'}), 500
+    report = (
+        f"🚁 Донесення: {first['Підрозділ']}\n"
+        f"👤 Пілот: {first['Оператор']}\n"
+        f"📅 Дата: {first['Дата']}\n"
+        f"⏰ Час завдання: {first['Час завдання']}\n"
+        f"🛡 БпЛА: {first['Дрон']}\n"
+        "━━━━━━━━━━━━━━━\n"
+        "🚀 Вильоти:\n" + flights_txt
+    )
 
-# ============ API: ПОВІДОМЛЕННЯ ============
-@app.route('/api/message/generate', methods=['GET'])
-def generate_message():
-    """Згенерувати повідомлення для Telegram"""
-    try:
-        user = session.get('user')
-        flights = session.get('flights', [])
-        session_drones = session.get('session_drones', [])
-        
-        message = "📋 *ЗВІТ ПРО ПОЛЬОТИ ДРОНІВ*\n\n"
-        
-        if user:
-            message += f"👤 *Оператор:* {user['name']}\n"
-            message += f"📧 *Email:* {user['email']}\n"
-            if user.get('phone'):
-                message += f"📞 *Телефон:* {user['phone']}\n"
-            message += "\n"
-        
-        if session_drones:
-            message += "🚁 *Дрони в цьому сеансі:*\n"
-            for drone in session_drones:
-                message += f"   • {drone['model']} (SN: {drone['serial']})\n"
-            message += "\n"
-        
-        if flights:
-            message += f"✈️ *Всього злітів:* {len(flights)}\n\n"
-            message += "*Деталі польотів:*\n"
-            
-            for idx, flight in enumerate(flights, 1):
-                message += f"\n{idx}. *{flight['location']}*\n"
-                message += f"   Дрон: {flight['drone']}\n"
-                message += f"   Серійний номер: `{flight['serial']}`\n"
-                message += f"   Тривалість: {flight['duration']} хв.\n"
-                message += f"   Висота: {flight['altitude']} м\n"
-                if flight.get('notes'):
-                    message += f"   Примітки: {flight['notes']}\n"
+    # збираємо всі фото
+    all_photos = []
+    for fl in all_fl:
+        if fl.get('files'):
+            for img in fl['files']:
+                all_photos.append(img)
+
+    if all_photos:
+        media_group = []
+        files = {}
+        for idx, img in enumerate(all_photos):
+            media = {'type': 'photo', 'media': f'attach://photo{idx}'}
+            if idx == 0:
+                media['caption'] = report
+                media['parse_mode'] = 'Markdown'
+            media_group.append(media)
+            files[f'photo{idx}'] = (
+                getattr(img, 'name', f'photo{idx}.jpg'),
+                img.getvalue(),
+                getattr(img, 'type', 'image/jpeg')
+            )
+        try:
+            requests.post(
+                f"https://api.telegram.org/bot{TG_TOKEN}/sendMediaGroup",
+                data={'chat_id': str(TG_CHAT_ID),
+                      'media': json.dumps(media_group)},
+                files=files
+            )
+        except Exception:
+            traceback.print_exc()
+    else:
+        try:
+            requests.post(
+                f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
+                data={'chat_id': str(TG_CHAT_ID),
+                      'text': report,
+                      'parse_mode': 'Markdown'}
+            )
+        except Exception:
+            traceback.print_exc()
+
+# --- 4. ПІДКЛЮЧЕННЯ GSheets ---
+conn = st.connection("gsheets", type=GSheetsConnection)
+try:
+    _spreadsheet_cfg = st.secrets.get("connections", {}) \
+                            .get("gsheets", {}) \
+                            .get("spreadsheet")
+    if not _spreadsheet_cfg:
+        st.warning(
+            "Налаштування Google Таблиць не знайдено: "
+            "додайте 'connections.gsheets.spreadsheet' у секрети."
+        )
+except Exception:
+    pass
+
+# --- 5. ІНІЦІАЛІЗАЦІЯ СТАНУ ---
+if 'temp_flights' not in st.session_state:
+    st.session_state.temp_flights = []
+if 'logged_in' not in st.session_state:
+    st.session_state.logged_in = False
+if 'splash_done' not in st.session_state:
+    st.session_state.splash_done = False
+if 'uploader_key' not in st.session_state:
+    st.session_state.uploader_key = 0
+if 'last_unit' not in st.session_state:
+    st.session_state.last_unit = UNITS[0]
+if 'last_name' not in st.session_state:
+    st.session_state.last_name = ""
+if 'remember_credentials' not in st.session_state:
+    st.session_state.remember_credentials = True
+if 'app_contact' not in st.session_state:
+    st.session_state.app_contact = ""
+if 'app_phone' not in st.session_state:
+    st.session_state.app_phone = ""
+
+# завантажити запам'ятованого користувача
+try:
+    rem_name, rem_unit = load_remembered_user()
+    if rem_name:
+        st.session_state.last_name = rem_name
+    if rem_unit:
+        st.session_state.last_unit = rem_unit
+except Exception:
+    pass
+
+# --- 6. СТИЛІ ---
+st.markdown("""
+<style>
+.stButton>button {
+  width:100%; border-radius:8px;
+  background-color:#2E7D32; color:white;
+  height:3.5em; font-weight:bold; border:none;
+}
+.stButton>button:hover {
+  background-color:#1B5E20; color:white;
+}
+.duration-box {
+  background:#f1f3f5; padding:10px; border-radius:8px;
+  text-align:center; border:1px solid #dee2e6;
+  color:#1b5e20; font-size:1.2em;
+}
+.splash-container { text-align:center; margin-top:15%; }
+.slogan-box {
+  color:#2E7D32; font-family:'Courier New',monospace;
+  font-weight:bold; font-size:1.5em;
+  border-top:2px solid #2E7D32;
+  border-bottom:2px solid #2E7D32;
+  padding:20px 0; margin:20px 0; letter-spacing:2px;
+}
+.contact-card {
+  background:#e8f5e9; padding:15px;
+  border-radius:10px; border-left:5px solid #2E7D32;
+  margin-bottom:15px; color:black!important;
+}
+.contact-title {
+  font-size:1.1em; font-weight:bold;
+  color:black!important; margin-bottom:5px;
+}
+.contact-desc {
+  font-size:0.9em; color:black!important;
+  font-style:italic; margin-bottom:10px; line-height:1.3;
+}
+.stAlert p { color:black!important; }
+.login-hint {
+  font-size:0.85em; color:#666; font-style:italic;
+  margin: -10px 0 10px 0;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# --- 7. SPLASH ---
+if not st.session_state.splash_done:
+    container = st.empty()
+    with container.container():
+        st.markdown("""
+        <div class='splash-container'>
+            <h1 style='font-size:4em;'>🛡️</h1>
+            <h1>КАБІНЕТ ПІЛОТА БПЛА</h1>
+            <div class='slogan-box'>
+                СТАЛЕВИЙ ОБЛІК ДЛЯ СТАЛЕВОГО КОРДОНУ
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        my_bar = st.progress(0, text="Ініціалізація...")
+        for p in range(100):
+            time.sleep(0.01)
+            my_bar.progress(p+1)
+    st.session_state.splash_done = True
+    st.rerun()
+
+# --- 8. ІНТЕРФЕЙС ВХОДУ ---
+if not st.session_state.logged_in:
+    st.markdown(
+        "<h2 style='text-align:center;'>🛡️ ВХІД У СИСТЕМУ</h2>",
+        unsafe_allow_html=True
+    )
+    role = st.radio("Режим:", ["Пілот", "Адміністратор"], horizontal=True)
+    with st.container():
+        if role == "Пілот":
+            idx = UNITS.index(st.session_state.last_unit) \
+                  if st.session_state.last_unit in UNITS else 0
+            u = st.selectbox("Підрозділ:", UNITS, index=idx)
+            n = st.text_input(
+                "Звання та Призвище:",
+                value=st.session_state.last_name,
+                placeholder="наприклад: ст.с-т Іваненко"
+            )
+            if st.session_state.last_name:
+                st.markdown(
+                    "<p class='login-hint'>💡 Дані автоматично збережено з попереднього входу</p>",
+                    unsafe_allow_html=True
+                )
+            remember = st.checkbox(
+                "Запам'ятати мої дані",
+                value=st.session_state.remember_credentials
+            )
+            if st.button("УВІЙТИ") and n:
+                if remember:
+                    st.session_state.last_unit = u
+                    st.session_state.last_name = n
+                    st.session_state.remember_credentials = True
+                    try:
+                        save_remembered_user(n, u)
+                    except Exception:
+                        pass
+                else:
+                    st.session_state.last_unit = UNITS[0]
+                    st.session_state.last_name = ""
+                    st.session_state.remember_credentials = False
+                st.session_state.logged_in = True
+                st.session_state.role = "Pilot"
+                st.session_state.user = {"unit": u, "name": n}
+                # завантажити чернетки
+                df_d = load_data("Drafts")
+                if not df_d.empty and "Оператор" in df_d.columns:
+                    my_d = df_d[
+                        df_d['Оператор'].astype(str).str.strip().str.lower()
+                        == n.strip().lower()
+                    ]
+                    if not my_d.empty:
+                        st.session_state.temp_flights.extend(
+                            my_d.to_dict('records')
+                        )
+                st.rerun()
+
+        else:  # Адміністратор
+            p = st.text_input("Пароль:", type="password")
+            if st.button("ВХІД") and p == ADMIN_PASSWORD:
+                st.session_state.logged_in = True
+                st.session_state.role = "Адміністратор"
+                st.rerun()
+
+    st.stop()
+
+# --- 9. ОСНОВНИЙ ІНТЕРФЕЙС ---
+st.sidebar.markdown(
+    f"👤 {st.session_state.user['name']}"
+    if st.session_state.role == "Pilot" else "👤 Адмін"
+)
+if st.sidebar.button("Вихід"):
+    st.session_state.logged_in = False
+    st.session_state.splash_done = False
+    st.rerun()
+
+tab_f, tab_app, tab_cus, tab_hist, tab_stat, tab_info = st.tabs([
+    "🚀 Польоти",
+    "📋 Заявка",
+    "📡 ЦУС",
+    "📜 Архів",
+    "📊 Аналітика",
+    "ℹ️ Довідка"
+])
+
+# --- TAB: ПОЛЬОТИ ---
+with tab_f:
+    st.header("Внесення польотів")
+
+    available_drones = get_drones_for_unit(
+        st.session_state.user['unit']
+    )
+    if not available_drones:
+        st.warning(
+            f"⚠️ У базі даних немає дронів для підрозділу "
+            f"'{st.session_state.user['unit']}'. Зверніться до адміністратора."
+        )
+        available_drones = ["Дрон не вказано"]
+
+    with st.container():
+        c1, c2, c3, c4 = st.columns(4)
+        m_date = c1.date_input(
+            "Дата завдання", datetime.now(),
+            key="m_date_val"
+        )
+        m_start = c2.time_input(
+            "Зміна з", d_time(8,0),
+            key="m_start_val"
+        )
+        m_end = c3.time_input(
+            "Зміна до", d_time(20,0),
+            key="m_end_val"
+        )
+        m_route = c4.text_input(
+            "Маршрут", key="m_route_val",
+            placeholder="Введіть маршрут"
+        )
+        st.selectbox(
+            "🛡️ БпЛА НА ЗМІНУ:",
+            available_drones,
+            key="sel_drone_val"
+        )
+
+    with st.expander("➕ ДОДАТИ НОВИЙ ВИЛІТ", expanded=True):
+        col1, col2, col3, col4 = st.columns(4)
+        t_off_str = col1.text_input(
+            "Зліт", value="", placeholder="09:00 або 0930",
+            help="Можна 930 або 0930", key="t_off_input"
+        )
+        t_land_str = col2.text_input(
+            "Посадка", value="", placeholder="09:30",
+            key="t_land_input"
+        )
+        p_off = smart_time_parse(t_off_str)
+        p_land = smart_time_parse(t_land_str)
+        if p_off and p_land:
+            dur = calculate_duration(p_off, p_land)
+            col3.markdown(
+                f"<div class='duration-box'>⏳ <b>{dur} хв</b></div>",
+                unsafe_allow_html=True
+            )
         else:
-            message += "⚠️ *Жодного польоту не записано*"
-        
-        message += f"\n\n📅 Дата: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}"
-        
-        return jsonify({'success': True, 'message': message})
-    
-    except Exception as e:
-        return jsonify({'success': False, 'message': f'Помилка: {str(e)}'}), 500
+            col3.info("⏳ Час?")
 
-@app.route('/api/message/send-telegram', methods=['POST'])
-def send_telegram():
-    """Надіслати повідомлення в Telegram"""
-    try:
-        import requests
-        
-        data = request.get_json()
-        token = data.get('token', '').strip()
-        chat_id = data.get('chat_id', '').strip()
-        message = data.get('message', '').strip()
-        
-        if not token or not chat_id or not message:
-            return jsonify({'success': False, 'message': 'Заповніть усі поля'}), 400
-        
-        # API Telegram
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
-        
-        response = requests.post(url, json={
-            'chat_id': chat_id,
-            'text': message,
-            'parse_mode': 'Markdown'
-        }, timeout=10)
-        
-        result = response.json()
-        
-        if result.get('ok'):
-            return jsonify({
-                'success': True,
-                'message': 'Повідомлення надіслано в Telegram'
-            })
+        f_dist = col4.number_input(
+            "Відстань (м)", min_value=0, value=0,
+            key="f_dist", help="Відстань польоту в метрах"
+        )
+        cb1, cb2 = st.columns(2)
+        f_akb = cb1.text_input(
+            "Номер АКБ", value="",
+            placeholder="Введіть номер", key="f_akb"
+        )
+        f_cyc = cb2.number_input(
+            "Цикли АКБ", min_value=0, value=0,
+            key="f_cyc"
+        )
+        f_res = st.selectbox(
+            "Результат",
+            ["Без ознак порушення", "Затримання", "Виявлення цілі"],
+            key="f_res"
+        )
+        f_note = st.text_area(
+            "Примітки", value="",
+            placeholder="Додаткова інформація (необов'язково)",
+            key="f_note"
+        )
+        f_imgs = st.file_uploader(
+            "📸 Скріншоти", accept_multiple_files=True,
+            key=f"uploader_{st.session_state.uploader_key}"
+        )
+
+        if st.button("✅ ДОДАТИ У СПИСОК"):
+            if p_off and p_land:
+                st.session_state.temp_flights.append({
+                    "Дата": st.session_state.m_date_val.strftime("%d.%m.%Y"),
+                    "Час завдання": (
+                        f"{st.session_state.m_start_val.strftime('%H:%M')} - "
+                        f"{st.session_state.m_end_val.strftime('%H:%M')}"
+                    ),
+                    "Підрозділ": st.session_state.user['unit'],
+                    "Оператор": st.session_state.user['name'],
+                    "Дрон": st.session_state.sel_drone_val,
+                    "Маршрут": st.session_state.m_route_val,
+                    "Взльот": p_off.strftime("%H:%M"),
+                    "Посадка": p_land.strftime("%H:%M"),
+                    "Тривалість (хв)": calculate_duration(p_off, p_land),
+                    "Дистанція (м)": st.session_state.f_dist,
+                    "Номер АКБ": st.session_state.f_akb,
+                    "Цикли АКБ": st.session_state.f_cyc,
+                    "Результат": f_res,
+                    "Примітки": f_note,
+                    "files": f_imgs
+                })
+                # очистити форму
+                st.session_state.t_off_input = ""
+                st.session_state.t_land_input = ""
+                st.session_state.f_dist = 0
+                st.session_state.f_akb = ""
+                st.session_state.f_cyc = 0
+                st.session_state.f_note = ""
+                st.session_state.uploader_key += 1
+                st.rerun()
+            else:
+                st.error("⚠️ Будь ласка, введіть коректний час злету та посадки")
+
+    # відображення списку
+    if st.session_state.temp_flights:
+        df_t = pd.DataFrame(st.session_state.temp_flights)
+        df_v = df_t[[
+            c for c in [
+                "Взльот", "Посадка",
+                "Дистанція (м)", "Тривалість (хв)",
+                "Номер АКБ", "Цикли АКБ"
+            ] if c in df_t.columns
+        ]]
+        df_v.columns = [
+            "Зліт", "Посадка",
+            "Відстань", "Хв",
+            "№ АКБ", "Цикли"
+        ][:len(df_v.columns)]
+        st.dataframe(df_v, use_container_width=True)
+        cb1, cb2, cb3 = st.columns(3)
+        if cb1.button("🗑️ Видалити останній"):
+            st.session_state.temp_flights.pop()
+            st.rerun()
+        if cb2.button("💾 Зберегти в Хмару"):
+            try:
+                new_df = pd.DataFrame(
+                    st.session_state.temp_flights
+                ).drop(columns=['files'], errors='ignore')
+                write_df_to_sheet(
+                    "Drafts", new_df,
+                    remove_operator=st.session_state.user['name']
+                )
+                st.success("💾 Збережено у чернетки (Drafts)!")
+            except Exception:
+                st.error(
+                    "Не вдалося зберегти. "
+                    "Подивіться лог /tmp/gspread_api_error.json для деталей."
+                )
+        if cb3.button("🚀 ВІДПРАВИТИ ВСІ ДАНІ"):
+            all_fl = st.session_state.temp_flights
+            try:
+                send_telegram_msg(all_fl)
+            except Exception:
+                traceback.print_exc()
+
+            final_to_db = []
+            for f in all_fl:
+                row = f.copy()
+                row.pop('files', None)
+                row["Медіа (статус)"] = (
+                    "З фото" if f.get('files') else "Текст"
+                )
+                final_to_db.append(row)
+
+            write_ok = True
+            try:
+                write_df_to_sheet(
+                    "Sheet1", pd.DataFrame(final_to_db)
+                )
+            except Exception:
+                write_ok = False
+                st.error(
+                    "Не вдалося записати у основну базу. "
+                    "Подивіться лог /tmp/gspread_api_error.json."
+                )
+
+            if write_ok:
+                df_d = load_data("Drafts")
+                if not df_d.empty and "Оператор" in df_d.columns:
+                    try:
+                        remaining = df_d[~(
+                            df_d['Оператор'].astype(str).str.strip().str.lower()
+                            == st.session_state.user['name'].strip().lower()
+                        )]
+                        if not remaining.empty:
+                            safe_conn_update(
+                                conn, worksheet="Drafts", data=remaining
+                            )
+                        else:
+                            safe_conn_update(
+                                conn, worksheet="Drafts",
+                                data=pd.DataFrame()
+                            )
+                    except Exception:
+                        st.error(
+                            "Не вдалося оновити Drafts після відправки. "
+                            "Перевірте лог."
+                        )
+                st.success("✅ Надіслано!")
+                st.session_state.temp_flights = []
+                st.rerun()
+
+# --- TAB: ЗАЯВКА ---
+with tab_app:
+    st.header("📝 Формування заявки")
+    st.warning(
+        "⚠️ **УВАГА:** Даний розділ НЕ відправляє заявки автоматично на ЦУС! "
+        "Він лише допомагає швидко сформувати текст заявки."
+    )
+
+    available_drones = get_drones_for_unit(
+        st.session_state.user['unit']
+    )
+    if not available_drones:
+        st.warning(
+            f"⚠️ У базі даних немає дронів для підрозділу "
+            f"'{st.session_state.user['unit']}'."
+        )
+        available_drones = ["Дрон не вказано"]
+
+    with st.container():
+        app_unit = st.selectbox(
+            "1. Заявник:", UNITS,
+            index=UNITS.index(st.session_state.user['unit'])
+            if st.session_state.user['unit'] in UNITS else 0
+        )
+        app_drones = st.multiselect(
+            "2. Тип БпЛА:", available_drones, default=None
+        )
+        app_dates = st.date_input(
+            "3. Дата здійснення польоту:",
+            value=(datetime.now(), datetime.now() + timedelta(days=1))
+        )
+        c_t1, c_t2 = st.columns(2)
+        a_t1 = c_t1.time_input("4. Час роботи з:", d_time(8,0))
+        a_t2 = c_t2.time_input("до:", d_time(20,0))
+        app_route = st.text_area("5. Населений пункт (маршрут):")
+        c_h1, c_h2 = st.columns(2)
+        a_h = c_h1.text_input("6. Висота (м):", "до 500 м")
+        a_r = c_h2.text_input("7. Радіус (км):", "до 5 км")
+        app_purp = st.selectbox(
+            "8. Мета:",
+            [
+                "патрулювання ділянки відповідальності",
+                "за оперативною необхідністю",
+                "навчально-тренувальні польоти"
+            ]
+        )
+        c_cont, c_phone = st.columns(2)
+        app_cont = c_cont.text_input(
+            "9. Контактна особа:",
+            value=st.session_state.app_contact
+            if st.session_state.app_contact else st.session_state.user['name'],
+            placeholder="Прізвище Ім'я"
+        )
+        app_phone = c_phone.text_input(
+            "10. Номер телефону:",
+            value=st.session_state.app_phone,
+            placeholder="+380..."
+        )
+
+    if st.button("✨ СФОРМУВАТИ ТЕКСТ ЗАЯВКИ"):
+        st.session_state.app_contact = app_cont
+        st.session_state.app_phone = app_phone
+        d_str = ", ".join(app_drones) if app_drones else "не вказано"
+        dt_r = (
+            f"з {app_dates[0].strftime('%d.%m.%Y')} по {app_dates[1].strftime('%d.%m.%Y')}"
+            if isinstance(app_dates, tuple) and len(app_dates) == 2
+            else app_dates[0].strftime('%d.%m.%Y')
+        )
+        contact_info = (
+            f"{app_cont}, тел: {app_phone}"
+            if app_phone else app_cont
+        )
+        f_txt = (
+            "ЗАЯВКА НА ПОЛІТ\n"
+            f"1. Заявник: в/ч 2196 ({app_unit})\n"
+            f"2. Тип БпЛА: {d_str}\n"
+            f"3. Дата здійснення польоту: {dt_r}\n"
+            f"4. Час роботи: з {a_t1.strftime('%H:%M')} по {a_t2.strftime('%H:%M')}\n"
+            f"5. Населений пункт (маршрут): {app_route}\n"
+            f"6. Висота роботи (м): {a_h}\n"
+            f"7. Радіус роботи (км): {a_r}\n"
+            f"8. Мета польоту: {app_purp}\n"
+            f"9. Контактна особа: {contact_info}"
+        )
+        st.code(f_txt, language="text")
+
+# --- TAB: ЦУС ---
+with tab_cus:
+    st.header("📡 Дані для ЦУС")
+    if not st.session_state.temp_flights:
+        st.info("Додайте польоти.")
+    else:
+        all_f = st.session_state.temp_flights
+        s_start = st.session_state.m_start_val
+        before_mid, after_mid, cross = [], [], False
+        for f in all_f:
+            fs = datetime.strptime(f['Взльот'], "%H:%M").time()
+            fe = datetime.strptime(f['Посадка'], "%H:%M").time()
+            if cross or fe < fs or fs < s_start:
+                cross = True
+                after_mid.append(f)
+            else:
+                before_mid.append(f)
+        def fc(lst):
+            return "\n".join([
+                f"{f['Взльот']} - {f['Посадка']} - "
+                f"{f.get('Дистанція (м)', 0)} м "
+                f"({f['Тривалість (хв)']} хв)"
+                for f in lst
+            ])
+        st.subheader("🌙 До 00:00")
+        st.code(fc(before_mid), language="text")
+        st.subheader("☀️ Після 00:00")
+        st.code(fc(after_mid), language="text")
+
+# --- TAB: АРХІВ ---
+with tab_hist:
+    st.header("📜 Мій журнал")
+    df_h = load_data("Sheet1")
+    if not df_h.empty and "Оператор" in df_h.columns:
+        if st.session_state.role == "Pilot":
+            mask = (
+                df_h['Оператор'].astype(str).str.strip().str.lower()
+                == st.session_state.user['name'].strip().lower()
+            )
+            p_df = df_h[mask]
         else:
-            return jsonify({
-                'success': False,
-                'message': f'Помилка Telegram: {result.get("description", "Unknown error")}'
-            }), 400
-    
-    except requests.exceptions.RequestException as e:
-        return jsonify({'success': False, 'message': f'Помилка мережі: {str(e)}'}), 500
-    except Exception as e:
-        return jsonify({'success': False, 'message': f'Помилка: {str(e)}'}), 500
+            p_df = df_h
+        if not p_df.empty:
+            if 'Дата' in p_df.columns:
+                p_df['Дата_dt'] = pd.to_datetime(
+                    p_df['Дата'], format='%d.%m.%Y', errors='coerce'
+                )
+            else:
+                p_df['Дата_dt'] = pd.NaT
+            p_df = p_df.sort_values(
+                by='Дата_dt', ascending=False, na_position='last'
+            )
+            cols = [
+                "Дата", "Час завдання", "Підрозділ", "Оператор", "Дрон",
+                "Маршрут", "Взльот", "Посадка", "Тривалість (хв)",
+                "Дистанція (м)", "Результат", "Примітки",
+                "Медіа (статус)", "Номер АКБ", "Цикли АКБ"
+            ]
+            available = [c for c in cols if c in p_df.columns]
+            st.dataframe(p_df[available], use_container_width=True)
+        else:
+            st.info("Архів порожній для цього оператора.")
+    else:
+        st.info("База даних ще не містить записів.")
 
-# ============ ОБРОБКА ПОМИЛОК ============
-@app.errorhandler(404)
-def not_found(error):
-    return jsonify({'error': 'Сторінка не знайдена'}), 404
+# --- TAB: АНАЛІТИКА ---
+with tab_stat:
+    st.header("📊 Аналітика")
+    df_s = load_data("Sheet1")
+    if not df_s.empty and "Оператор" in df_s.columns and "Дата" in df_s.columns:
+        if st.session_state.role == "Pilot":
+            df_s = df_s[
+                df_s['Оператор'].astype(str).str.strip().str.lower()
+                == st.session_state.user['name'].strip().lower()
+            ]
+        if not df_s.empty:
+            df_s['Дата_dt'] = pd.to_datetime(
+                df_s['Дата'], format='%d.%m.%Y', errors='coerce'
+            )
+            df_s = df_s.dropna(subset=['Дата_dt'])
+            if not df_s.empty:
+                df_s['M_num'] = df_s['Дата_dt'].dt.month
+                df_s['Y_num'] = df_s['Дата_dt'].dt.year
+                df_s['Тривалість (хв)'] = pd.to_numeric(
+                    df_s.get('Тривалість (хв)', 0),
+                    errors='coerce'
+                ).fillna(0)
+                rs = df_s.groupby(['Y_num', 'M_num']).agg(
+                    Польоти=('Дата', 'count'),
+                    Затримання=('Результат', lambda x: (x == "Затримання").sum()),
+                    Хв=('Тривалість (хв)', 'sum')
+                ).reset_index()
+                if not rs.empty:
+                    rs['Місяць'] = rs.apply(
+                        lambda x: f"{UKR_MONTHS.get(int(x['M_num']), '???')} {int(x['Y_num'])}",
+                        axis=1
+                    )
+                    rs['Наліт'] = rs['Хв'].apply(format_to_time_str)
+                    st.table(
+                        rs.sort_values(
+                            by=['Y_num', 'M_num'],
+                            ascending=False
+                        )[['Місяць', 'Польоти', 'Затримання', 'Наліт']]
+                    )
+        else:
+            st.info("Немає польотів.")
+    else:
+        st.info("Недостатньо даних для аналітики.")
 
-@app.errorhandler(500)
-def internal_error(error):
-    return jsonify({'error': 'Помилка сервера'}), 500
+# --- TAB: ДОВІДКА ---
+with tab_info:
+    st.header("ℹ️ Довідка")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.markdown(
+            "<div class='contact-card'>"
+            "<div class='contact-title'>🎓 Інструктор</div>"
+            "<div class='contact-desc'>"
+            "Питання тактики застосування, налаштування системи та спеціалізованого ПЗ БпАС."
+            "</div><b>Олександр</b><br>+380502310609</div>",
+            unsafe_allow_html=True
+        )
+    with c2:
+        st.markdown(
+            "<div class='contact-card'>"
+            "<div class='contact-title'>🔧 Технік-майстер</div>"
+            "<div class='contact-desc'>"
+            "Механічні пошкодження майна, ремонт, збої апаратної частини."
+            "</div><b>Сергій</b><br>+380997517054</div>",
+            unsafe_allow_html=True
+        )
+    with c3:
+        st.markdown(
+            "<div class='contact-card'>"
+            "<div class='contact-title'>📦 Начальник складу</div>"
+            "<div class='contact-desc'>"
+            "Облік майна, оформлення актів переміщення та передача обладнання."
+            "</div><b>Ірина</b><br>+380667869701</div>",
+            unsafe_allow_html=True
+        )
+    st.write("---")
+    st.subheader("📖 Повна документація")
+    with st.expander("🛡️ ІНСТРУКЦІЯ КОРИСТУВАЧА", expanded=False):
+        st.markdown("""
+1. 🔑 Вхід у систему
+   - Оберіть Підрозділ, введіть Звання та Призвище.
+   - При повторному вході дані автоматично підставляються.
+   - Натисніть «Увійти».
 
-if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+2. 🚀 Вкладка «Польоти»
+   - Крок А (Завдання): Дата, Час зміни, БпЛА на зміну.
+   - Крок Б (Виліт): Час злету/посадки, Відстань, № АКБ, Цикли.
+   - Кнопка «➕ Додати у список», потім «🚀 ВІДПРАВИТИ ВСІ ДАНІ».
+
+3. 📋 Вкладка «Заявка»
+   - НЕ відправляє автоматично! Формує текст заявки.
+   - Скопіюйте й надшліть самостійно.
+
+4. 📡 Вкладка «ЦУС»
+   - Автоматичний розподіл польотів до/після 00:00.
+
+💡 При слабкому інтернеті користуйтесь «💾 Зберегти в Хмару».
+""")
+    with st.expander("📲 ЯК ВСТАНОВИТИ НА СМАРТФОН", expanded=False):
+        st.markdown("""
+Android (Chrome): Три крапки (⋮) -> «Додати на головний екран».  
+iPhone (Safari): Поділитися -> «Додати на початковий екран».
+""")
+    st.write("---")
+    st.markdown(
+        "<div style='text-align:center; color:black;'>"
+        "Слава Україні! 🇺🇦"
+        "</div>",
+        unsafe_allow_html=True
+    )
