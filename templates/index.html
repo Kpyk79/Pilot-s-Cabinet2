@@ -1,0 +1,157 @@
+<!-- templates/index.html -->
+<!-- Вставте весь HTML код звідси, але замініть всі функції на API запити -->
+
+<script>
+    // ============ API CLIENT ============
+    const API = {
+        async login(userData) {
+            return fetch('/api/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(userData)
+            }).then(r => r.json());
+        },
+
+        async addDrone(droneData) {
+            return fetch('/api/drones', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(droneData)
+            }).then(r => r.json());
+        },
+
+        async getFlights() {
+            return fetch('/api/flights').then(r => r.json());
+        },
+
+        async addFlight(flightData) {
+            return fetch('/api/flights', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(flightData)
+            }).then(r => r.json());
+        },
+
+        async deleteFlight(flightId) {
+            return fetch(`/api/flights/${flightId}`, {
+                method: 'DELETE'
+            }).then(r => r.json());
+        },
+
+        async generateMessage() {
+            return fetch('/api/message/generate').then(r => r.json());
+        },
+
+        async sendTelegram(token, chatId, message) {
+            return fetch('/api/message/send-telegram', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ token, chat_id: chatId, message })
+            }).then(r => r.json());
+        }
+    };
+
+    // Замініть старі функції на нові з API
+    async function handleLogin() {
+        const name = document.getElementById('userName').value.trim();
+        const email = document.getElementById('userEmail').value.trim();
+        const password = document.getElementById('userPassword').value.trim();
+        const phone = document.getElementById('userPhone').value.trim();
+
+        const result = await API.login({ name, email, password, phone });
+        
+        if (result.success) {
+            showAlert('loginAlert', result.message, 'success');
+            localStorage.setItem('userLoginData', JSON.stringify({ name, email, password, phone }));
+            setTimeout(() => switchTab('flights'), 1000);
+        } else {
+            showAlert('loginAlert', `❌ ${result.message}`, 'error');
+        }
+    }
+
+    async function addFlight() {
+        const drone = { model: document.getElementById('droneModel').value, serial: document.getElementById('droneSerial').value };
+        
+        if (!drone.model || !drone.serial) {
+            showAlert('flightsAlert', '❌ Виберіть дрон', 'error');
+            return;
+        }
+
+        const flightData = {
+            drone_model: drone.model,
+            serial: drone.serial,
+            location: document.getElementById('flightLocation').value.trim(),
+            duration: document.getElementById('flightDuration').value,
+            altitude: document.getElementById('flightAltitude').value,
+            notes: document.getElementById('flightNotes').value.trim()
+        };
+
+        const result = await API.addFlight(flightData);
+
+        if (result.success) {
+            showAlert('flightsAlert', result.message, 'success');
+            // Очистити форму
+            document.getElementById('flightLocation').value = '';
+            document.getElementById('flightDuration').value = '';
+            document.getElementById('flightAltitude').value = '';
+            document.getElementById('flightNotes').value = '';
+            loadFlights();
+        } else {
+            showAlert('flightsAlert', `❌ ${result.message}`, 'error');
+        }
+    }
+
+    async function loadFlights() {
+        const result = await API.getFlights();
+        const flights = result.flights || [];
+        const container = document.getElementById('flightsList');
+
+        if (flights.length === 0) {
+            container.innerHTML = '<p style="color: #999; text-align: center;">Ще немає доданих злітів</p>';
+            return;
+        }
+
+        container.innerHTML = flights.map(flight => `
+            <div class="flight-item">
+                <h4>✈️ ${flight.location}</h4>
+                <p><strong>Модель дрона:</strong> ${flight.drone}</p>
+                <p><strong>Серійний номер:</strong> <code>${flight.serial}</code></p>
+                <p><strong>Тривалість:</strong> ${flight.duration} хвилин</p>
+                <p><strong>Висота:</strong> ${flight.altitude} метрів</p>
+                ${flight.notes ? `<p><strong>Примітки:</strong> ${flight.notes}</p>` : ''}
+                <p><small>⏰ ${flight.timestamp}</small></p>
+                <button class="btn-danger" onclick="deleteFlight(${flight.id})">Видалити</button>
+            </div>
+        `).join('');
+    }
+
+    async function deleteFlight(id) {
+        if (confirm('Видалити?')) {
+            const result = await API.deleteFlight(id);
+            if (result.success) {
+                showAlert('flightsAlert', result.message, 'success');
+                loadFlights();
+            }
+        }
+    }
+
+    async function sendToTelegram() {
+        const token = document.getElementById('telegramToken').value.trim();
+        const chatId = document.getElementById('telegramChatId').value.trim();
+        const message = document.getElementById('telegramMessage').value.trim();
+
+        if (!token || !chatId) {
+            showAlert('messageAlert', '❌ Введіть токен та Chat ID', 'error');
+            return;
+        }
+
+        showAlert('messageAlert', '📤 Надсилання...', 'warning');
+        const result = await API.sendTelegram(token, chatId, message);
+
+        if (result.success) {
+            showAlert('messageAlert', result.message, 'success');
+        } else {
+            showAlert('messageAlert', `❌ ${result.message}`, 'error');
+        }
+    }
+</script>
