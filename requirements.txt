@@ -1,5 +1,9 @@
 streamlit
 pandas
-streamlit-gsheets
+plotly
+st-gsheets-connection
+python-docx
+google-api-python-client
+google-auth
 requests
 xlsxwriter
