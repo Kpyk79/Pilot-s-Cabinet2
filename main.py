@@ -5,6 +5,7 @@ import requests
 import time
 from datetime import datetime, time as d_time, timedelta
 import json
+import io  # Необхідно для роботи з буфером пам'яті
 
 # --- 1. КОНФІГУРАЦІЯ СТОРІНКИ ---
 st.set_page_config(page_title="UAV Pilot Cabinet v7.3", layout="wide", page_icon="🛡️")
@@ -68,10 +69,9 @@ def format_to_time_str(total_minutes):
     except: return "00:00"
 
 @st.cache_data
-def convert_df_to_csv(df):
-    # Колонки за запитом: Дата, Час завдання, Підрозділ, Оператор, БпЛА, Маршрут, Зліт, Посадка, Тривалість (хв), Дистанція (м), Номер АКБ, Цикли АКБ
-    # Мапінг на випадок розбіжностей у назвах БД
-    mapping = {"Дрон": "БпЛА", "Дистанція (м)": "Дистанція (м)"}
+def convert_df_to_excel(df):
+    # Фільтрація та перейменування згідно запиту
+    mapping = {"Дрон": "БпЛА"}
     export_df = df.copy().rename(columns=mapping)
     
     target_cols = [
@@ -79,10 +79,41 @@ def convert_df_to_csv(df):
         "Маршрут", "Зліт", "Посадка", "Тривалість (хв)", 
         "Дистанція (м)", "Номер АКБ", "Цикли АКБ"
     ]
-    
-    # Залишаємо лише ті, що існують
     final_cols = [c for c in target_cols if c in export_df.columns]
-    return export_df[final_cols].to_csv(index=False).encode('utf-8-sig')
+    export_df = export_df[final_cols]
+
+    # Створення Excel-файлу в пам'яті зі стилями
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        export_df.to_excel(writer, index=False, sheet_name='Архів_Польотів')
+        
+        workbook  = writer.book
+        worksheet = writer.sheets['Архів_Польотів']
+        
+        # Визначення стилів: Межі + Вирівнювання
+        border_format = workbook.add_format({
+            'border': 1,
+            'align': 'center',
+            'valign': 'vcenter',
+            'text_wrap': True
+        })
+        
+        header_format = workbook.add_format({
+            'bold': True,
+            'bg_color': '#2E7D32',
+            'color': 'white',
+            'border': 1,
+            'align': 'center',
+            'valign': 'vcenter'
+        })
+
+        # Застосування форматів та автопідбір ширини стовпців
+        for col_num, value in enumerate(export_df.columns.values):
+            worksheet.write(0, col_num, value, header_format)
+            column_len = max(export_df[value].astype(str).map(len).max(), len(value)) + 2
+            worksheet.set_column(col_num, col_num, min(column_len, 30), border_format)
+            
+    return output.getvalue()
 
 # --- 5. РОБОТА З БАЗОЮ ТА TG ---
 conn = st.connection("gsheets", type=GSheetsConnection)
@@ -338,13 +369,13 @@ else:
         if not df_h.empty and "Оператор" in df_h.columns:
             p_df = df_h[df_h['Оператор'] == st.session_state.user['name']] if st.session_state.role == "Pilot" else df_h
             if not p_df.empty:
-                # ЕКСПОРТ З ПЕВНИМИ КОЛОНКАМИ
-                csv_data = convert_df_to_csv(p_df)
+                # ЕКСПОРТ В EXCEL З ОФОРМЛЕННЯМ
+                excel_data = convert_df_to_excel(p_df)
                 st.download_button(
-                    label="📥 ЗАВАНТАЖИТИ АРХІВ (Дата, Час, БпЛА...)",
-                    data=csv_data,
-                    file_name=f"uav_report_{st.session_state.user['name']}_{datetime.now().strftime('%Y%m%d')}.csv",
-                    mime='text/csv',
+                    label="📥 ЗАВАНТАЖИТИ АРХІВ (Excel)",
+                    data=excel_data,
+                    file_name=f"uav_log_{st.session_state.user['name']}_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                    mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                 )
                 st.dataframe(p_df.sort_values(by="Дата", ascending=False), width='stretch')
 
