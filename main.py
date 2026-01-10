@@ -72,23 +72,20 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 
 def load_data(ws="Sheet1"):
     try:
-        # ВИПРАВЛЕННЯ 429: Встановлюємо кешування, щоб не перевантажувати Google API
-        # Drafts оновлюємо частіше (60 сек), архів рідше (300 сек)
+        # Оптимізація квот: кешування на рівні конектора
         cache_ttl = 60 if ws == "Drafts" else 300
         df = conn.read(worksheet=ws, ttl=cache_ttl)
         if df is None or df.empty: return pd.DataFrame()
         return df.dropna(how="all")
     except: return pd.DataFrame()
 
-@st.cache_data(ttl=600) # Кешуємо список дронів на 10 хвилин для економії запитів
+@st.cache_data(ttl=600)
 def get_drones_for_unit(unit):
     try:
         df = load_data("DronesDB")
         if df.empty or "Підрозділ" not in df.columns: return []
-        
         unit_drones = df[df['Підрозділ'] == unit]
         if unit_drones.empty: return []
-        
         drones_list = []
         for _, row in unit_drones.iterrows():
             model = row.get('Модель БпЛА', '')
@@ -153,8 +150,6 @@ st.markdown("""
     .splash-container { text-align: center; margin-top: 15%; }
     .slogan-box { color: #2E7D32; font-family: 'Courier New', monospace; font-weight: bold; font-size: 1.5em; border-top: 2px solid #2E7D32; border-bottom: 2px solid #2E7D32; padding: 20px 0; margin: 20px 0; letter-spacing: 2px; }
     .contact-card { background-color: #e8f5e9; padding: 15px; border-radius: 10px; border-left: 5px solid #2E7D32; margin-bottom: 15px; color: black !important; }
-    .contact-title { font-size: 1.1em; font-weight: bold; color: black !important; margin-bottom: 5px; }
-    .contact-desc { font-size: 0.9em; color: black !important; font-style: italic; margin-bottom: 10px; line-height: 1.3; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -254,9 +249,11 @@ else:
             
             if cb2.button("💾 Зберегти в Хмару"):
                 df_d = load_data("Drafts")
-                if not df_d.empty and "Оператор" in df_d.columns: df_d = df_d[df_d['Оператор'] != st.session_state.user['name']]
-                # Очищення типів перед записом
-                to_save = pd.concat([df_d, pd.DataFrame(st.session_state.temp_flights).drop(columns=['files'], errors='ignore')], ignore_index=True).astype(str).replace(['None', 'nan', '<NA>'], '')
+                if not df_d.empty and "Оператор" in df_d.columns:
+                    df_d = df_d[df_d['Оператор'] != st.session_state.user['name']]
+                to_save = pd.concat([df_d, pd.DataFrame(st.session_state.temp_flights).drop(columns=['files'], errors='ignore')], ignore_index=True)
+                # Санітизація даних для Google API
+                to_save = to_save.astype(str).replace(['None', 'nan', '<NA>'], '')
                 conn.update(worksheet="Drafts", data=to_save)
                 st.success("💾 Збережено!")
             
@@ -268,14 +265,17 @@ else:
                     row = f.copy(); row.pop('files', None); row["Медіа (статус)"] = "З фото" if f.get('files') else "Текст"
                     final_to_db.append(row)
                 db_m = load_data("Sheet1")
-                # Очищення типів
-                to_save_final = pd.concat([db_m, pd.DataFrame(final_to_db)], ignore_index=True).astype(str).replace(['None', 'nan', '<NA>'], '')
+                to_save_final = pd.concat([db_m, pd.DataFrame(final_to_db)], ignore_index=True)
+                # Санітизація даних для Google API
+                to_save_final = to_save_final.astype(str).replace(['None', 'nan', '<NA>'], '')
                 conn.update(worksheet="Sheet1", data=to_save_final)
-                # Очистка чернеток
+                
+                # Очистка чернеток оператора
                 df_d = load_data("Drafts")
                 if not df_d.empty and "Оператор" in df_d.columns:
                     df_d = df_d[df_d['Оператор'] != st.session_state.user['name']]
                     conn.update(worksheet="Drafts", data=df_d.astype(str))
+                
                 st.session_state.session_drone, st.session_state.temp_flights = None, []
                 st.success("✅ Надіслано!"); st.rerun()
 
@@ -294,7 +294,6 @@ else:
 
     with tab_app:
         st.header("📝 Формування заявки")
-        st.warning("⚠️ Тільки для копіювання тексту!")
         with st.container(border=True):
             app_unit = st.selectbox("1. Заявник:", UNITS, index=UNITS.index(st.session_state.user['unit']) if st.session_state.user['unit'] in UNITS else 0)
             app_drones = st.multiselect("2. Тип БпЛА:", get_drones_for_unit(app_unit))
@@ -326,4 +325,3 @@ else:
     with tab_info:
         st.header("ℹ️ Довідка")
         st.markdown("<div class='contact-card'><b>Техпідтримка:</b> Олександр (+380502310609)</div>", unsafe_allow_html=True)
-        st.info("Використовуйте кешування для стабільної роботи.")
