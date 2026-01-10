@@ -72,7 +72,6 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 
 def load_data(ws="Sheet1"):
     try:
-        # Оптимізація квот: кешування на рівні конектора
         cache_ttl = 60 if ws == "Drafts" else 300
         df = conn.read(worksheet=ws, ttl=cache_ttl)
         if df is None or df.empty: return pd.DataFrame()
@@ -252,7 +251,6 @@ else:
                 if not df_d.empty and "Оператор" in df_d.columns:
                     df_d = df_d[df_d['Оператор'] != st.session_state.user['name']]
                 to_save = pd.concat([df_d, pd.DataFrame(st.session_state.temp_flights).drop(columns=['files'], errors='ignore')], ignore_index=True)
-                # Санітизація даних для Google API
                 to_save = to_save.astype(str).replace(['None', 'nan', '<NA>'], '')
                 conn.update(worksheet="Drafts", data=to_save)
                 st.success("💾 Збережено!")
@@ -266,11 +264,9 @@ else:
                     final_to_db.append(row)
                 db_m = load_data("Sheet1")
                 to_save_final = pd.concat([db_m, pd.DataFrame(final_to_db)], ignore_index=True)
-                # Санітизація даних для Google API
                 to_save_final = to_save_final.astype(str).replace(['None', 'nan', '<NA>'], '')
                 conn.update(worksheet="Sheet1", data=to_save_final)
                 
-                # Очистка чернеток оператора
                 df_d = load_data("Drafts")
                 if not df_d.empty and "Оператор" in df_d.columns:
                     df_d = df_d[df_d['Оператор'] != st.session_state.user['name']]
@@ -317,10 +313,27 @@ else:
         st.header("📊 Аналітика")
         df_s = load_data("Sheet1")
         if not df_s.empty and "Оператор" in df_s.columns:
-            if st.session_state.role == "Pilot": df_s = df_s[df_s['Оператор'] == st.session_state.user['name']]
+            if st.session_state.role == "Pilot": 
+                df_s = df_s[df_s['Оператор'] == st.session_state.user['name']]
+            
+            # Парсинг дати з санітизацією
             df_s['Дата_dt'] = pd.to_datetime(df_s['Дата'], format='%d.%m.%Y', errors='coerce')
-            rs = df_s.dropna(subset=['Дата_dt']).groupby([df_s['Дата_dt'].dt.year, df_s['Дата_dt'].dt.month]).agg(Польоти=('Дата', 'count'), Хв=('Тривалість (хв)', 'sum')).reset_index()
-            st.table(rs)
+            df_s = df_s.dropna(subset=['Дата_dt'])
+            
+            if not df_s.empty:
+                # ВИПРАВЛЕННЯ ПОМИЛКИ: Явне іменування рівнів групування для уникнення колізії при reset_index
+                rs = df_s.groupby(
+                    [df_s['Дата_dt'].dt.year.rename('Рік'), df_s['Дата_dt'].dt.month.rename('Місяць_№')]
+                ).agg(
+                    Польоти=('Дата', 'count'), 
+                    Хв=('Тривалість (хв)', 'sum')
+                ).reset_index()
+                
+                # Форматування для відображення
+                rs['Період'] = rs.apply(lambda x: f"{UKR_MONTHS.get(int(x['Місяць_№']), '???')} {int(x['Рік'])}", axis=1)
+                rs['Наліт'] = rs['Хв'].apply(format_to_time_str)
+                
+                st.table(rs[['Період', 'Польоти', 'Наліт']].sort_values(by=['Період'], ascending=False))
 
     with tab_info:
         st.header("ℹ️ Довідка")
