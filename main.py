@@ -245,6 +245,14 @@ def get_drones_for_unit(unit):
 # --- 4. РОБОТА З БАЗОЮ ТА TG ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
+# Optional: basic config check for spreadsheet secret
+try:
+    _spreadsheet_cfg = st.secrets.get("connections", {}).get("gsheets", {}).get("spreadsheet")
+    if not _spreadsheet_cfg:
+        st.warning("Налаштування Google Sheets не знайдено: додайте 'connections.gsheets.spreadsheet' у secrets.")
+except Exception:
+    pass
+
 def send_telegram_msg(all_fl):
     if not TG_TOKEN or not TG_CHAT_ID: return
     first = all_fl[0]
@@ -270,16 +278,22 @@ def send_telegram_msg(all_fl):
                 photo_data['parse_mode'] = 'Markdown'
             media_group.append(photo_data)
         files = {f'photo{idx}': (getattr(img, 'name', f'photo{idx}.jpg'), img.getvalue(), getattr(img, 'type', 'image/jpeg')) for idx, img in enumerate(all_photos)}
-        requests.post(
-            f"https://api.telegram.org/bot{TG_TOKEN}/sendMediaGroup",
-            data={'chat_id': str(TG_CHAT_ID), 'media': json.dumps(media_group)},
-            files=files
-        )
+        try:
+            requests.post(
+                f"https://api.telegram.org/bot{TG_TOKEN}/sendMediaGroup",
+                data={'chat_id': str(TG_CHAT_ID), 'media': json.dumps(media_group)},
+                files=files
+            )
+        except Exception:
+            traceback.print_exc()
     else:
-        requests.post(
-            f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-            data={'chat_id': str(TG_CHAT_ID), 'text': report, 'parse_mode': 'Markdown'}
-        )
+        try:
+            requests.post(
+                f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
+                data={'chat_id': str(TG_CHAT_ID), 'text': report, 'parse_mode': 'Markdown'}
+            )
+        except Exception:
+            traceback.print_exc()
 
 # --- 5. ІНІЦІАЛІЗАЦІЯ СТАНУ ---
 if 'temp_flights' not in st.session_state: st.session_state.temp_flights = []
@@ -323,7 +337,7 @@ if not st.session_state.splash_done:
     container = st.empty()
     with container.container():
         st.markdown("<div class='splash-container'><h1 style='font-size: 4em;'>🛡️</h1><h1>UAV PILOT CABINET</h1><div class='slogan-box'>СТАЛЕВИЙ ОБЛІК ДЛЯ СТАЛЕВОГО КОРДОНУ</div></div>", unsafe_allow_html=True)
-        my_bar = st.progress(0, text="Ініціалізація...")
+        my_bar = st.progress(0, text="Ін��ціалізація...")
         for p in range(100): time.sleep(0.01); my_bar.progress(p + 1)
         st.session_state.splash_done = True; st.rerun()
 
@@ -371,7 +385,7 @@ if not st.session_state.logged_in:
 # --- 9. ОСНОВНИЙ ІНТЕРФЕЙС ---
 else:
     st.sidebar.markdown(f"👤 **{st.session_state.user['name'] if st.session_state.role=='Pilot' else 'Адмін'}**")
-    if st.sidebar.button("Вийти"): 
+    if st.sidebar.button("Вийти"):
         st.session_state.logged_in = False
         st.session_state.splash_done = False
         st.rerun()
@@ -441,7 +455,7 @@ else:
         if st.session_state.temp_flights:
             df_t = pd.DataFrame(st.session_state.temp_flights)
             df_v = df_t[[c for c in ["Взльот", "Посадка", "Дистанція (м)", "Тривалість (хв)", "Номер АКБ", "Цикли АКБ"] if c in df_t.columns]]
-            df_v.columns = ["Зліт", "Посадка", "Відстань", "Хв", "№ АКБ", "Цикли"][:len(df_v.columns)]
+            df_v.columns = ["Зліт", "Посадка", "Відстань", "Хв", "№ АК��", "Цикли"][:len(df_v.columns)]
             st.dataframe(df_v, use_container_width=True)
             cb1, cb2, cb3 = st.columns(3)
             if cb1.button("🗑️ Видалити останній"):
@@ -455,40 +469,45 @@ else:
                     write_df_to_sheet("Drafts", new_df, remove_operator=st.session_state.user['name'])
                     st.success("💾 Збережено у чернетки (Drafts)!")
                 except Exception:
-                    st.error("Не вдалося зберегти. Подивіться лог /tmp/gspread_api_error.json для детал��й.")
+                    st.error("Не вдалося зберегти. Подивіться лог /tmp/gspread_api_error.json для деталей.")
             if cb3.button("🚀 ВІДПРАВИТИ ВСІ ДАНІ"):
                 all_fl = st.session_state.temp_flights
-                send_telegram_msg(all_fl)
+                # Telegram send should not break the flow
+                try:
+                    send_telegram_msg(all_fl)
+                except Exception:
+                    traceback.print_exc()
                 final_to_db = []
                 for f in all_fl:
                     row = f.copy()
                     row.pop('files', None)
                     row["Медіа (статус)"] = "З фото" if f.get('files') else "Текст"
                     final_to_db.append(row)
+                write_ok = True
                 try:
                     write_df_to_sheet("Sheet1", pd.DataFrame(final_to_db))
                 except Exception:
+                    write_ok = False
                     st.error("Не вдалося записати у основну базу. Подивіться лог /tmp/gspread_api_error.json.")
-                    raise
 
-                # Очищуємо Drafts після успішної відправки
-                df_d = load_data("Drafts")
-                if not df_d.empty and "Оператор" in df_d.columns:
-                    try:
-                        # remove this operator's drafts
-                        remaining = df_d[~(df_d['Оператор'].astype(str).str.strip().str.lower() == st.session_state.user['name'].strip().lower())]
-                        if not remaining.empty:
-                            safe_conn_update(conn, worksheet="Drafts", data=remaining)
-                        else:
-                            # If no remaining drafts, clear the sheet
-                            safe_conn_update(conn, worksheet="Drafts", data=pd.DataFrame())
-                    except Exception:
-                        st.error("Не вдалося оновити Drafts після відправки. Перевірте лог.")
-                        raise
+                if write_ok:
+                    # Очищуємо Drafts після успішної відправки
+                    df_d = load_data("Drafts")
+                    if not df_d.empty and "Оператор" in df_d.columns:
+                        try:
+                            # remove this operator's drafts
+                            remaining = df_d[~(df_d['Оператор'].astype(str).str.strip().str.lower() == st.session_state.user['name'].strip().lower())]
+                            if not remaining.empty:
+                                safe_conn_update(conn, worksheet="Drafts", data=remaining)
+                            else:
+                                # If no remaining drafts, clear the sheet
+                                safe_conn_update(conn, worksheet="Drafts", data=pd.DataFrame())
+                        except Exception:
+                            st.error("Не вдалося оновити Drafts після відправки. Перевірте лог.")
 
-                st.success("✅ Надіслано!")
-                st.session_state.temp_flights = []
-                st.rerun()
+                    st.success("✅ Надіслано!")
+                    st.session_state.temp_flights = []
+                    st.rerun()
 
     # --- ВКЛАДКА ЗАЯВКА ---
     with tab_app:
