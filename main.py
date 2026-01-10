@@ -67,6 +67,23 @@ def format_to_time_str(total_minutes):
         return f"{int(hours):02d}:{int(minutes):02d}"
     except: return "00:00"
 
+@st.cache_data
+def convert_df_to_csv(df):
+    # Колонки за запитом: Дата, Час завдання, Підрозділ, Оператор, БпЛА, Маршрут, Зліт, Посадка, Тривалість (хв), Дистанція (м), Номер АКБ, Цикли АКБ
+    # Мапінг на випадок розбіжностей у назвах БД
+    mapping = {"Дрон": "БпЛА", "Дистанція (м)": "Дистанція (м)"}
+    export_df = df.copy().rename(columns=mapping)
+    
+    target_cols = [
+        "Дата", "Час завдання", "Підрозділ", "Оператор", "БпЛА", 
+        "Маршрут", "Зліт", "Посадка", "Тривалість (хв)", 
+        "Дистанція (м)", "Номер АКБ", "Цикли АКБ"
+    ]
+    
+    # Залишаємо лише ті, що існують
+    final_cols = [c for c in target_cols if c in export_df.columns]
+    return export_df[final_cols].to_csv(index=False).encode('utf-8-sig')
+
 # --- 5. РОБОТА З БАЗОЮ ТА TG ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
@@ -320,7 +337,16 @@ else:
         df_h = load_data("Sheet1")
         if not df_h.empty and "Оператор" in df_h.columns:
             p_df = df_h[df_h['Оператор'] == st.session_state.user['name']] if st.session_state.role == "Pilot" else df_h
-            st.dataframe(p_df.sort_values(by="Дата", ascending=False), width='stretch')
+            if not p_df.empty:
+                # ЕКСПОРТ З ПЕВНИМИ КОЛОНКАМИ
+                csv_data = convert_df_to_csv(p_df)
+                st.download_button(
+                    label="📥 ЗАВАНТАЖИТИ АРХІВ (Дата, Час, БпЛА...)",
+                    data=csv_data,
+                    file_name=f"uav_report_{st.session_state.user['name']}_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime='text/csv',
+                )
+                st.dataframe(p_df.sort_values(by="Дата", ascending=False), width='stretch')
 
     with tab_stat:
         st.header("📊 Аналітика")
@@ -331,21 +357,15 @@ else:
             df_s['Дата_dt'] = pd.to_datetime(df_s['Дата'], format='%d.%m.%Y', errors='coerce')
             df_s = df_s.dropna(subset=['Дата_dt'])
             if not df_s.empty:
-                # ГАРАНТОВАНЕ СТВОРЕННЯ СТОВПЦІВ ДЛЯ ГРУПУВАННЯ
                 df_s['Рік'] = df_s['Дата_dt'].dt.year
                 df_s['Місяць_№'] = df_s['Дата_dt'].dt.month
-                
-                # ГРУПУВАННЯ ЗА ІМЕНАМИ СТОВПЦІВ
                 rs = df_s.groupby(['Рік', 'Місяць_№']).agg(
                     Польоти=('Дата', 'count'), 
                     Затримання=('Результат', lambda x: (x == "Затримання").sum()),
                     Хв=('Тривалість (хв)', 'sum')
                 ).reset_index()
-                
                 rs['Період'] = rs.apply(lambda x: f"{UKR_MONTHS.get(int(x['Місяць_№']), '???')} {int(x['Рік'])}", axis=1)
                 rs['Наліт'] = rs['Хв'].apply(format_to_time_str)
-                
-                # ТЕПЕР СОРТУВАННЯ ГАРАНТОВАНО ПРАЦЮЄ
                 rs = rs.sort_values(by=['Рік', 'Місяць_№'], ascending=False)
                 st.table(rs[['Період', 'Польоти', 'Затримання', 'Наліт']])
 
