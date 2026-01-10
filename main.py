@@ -563,11 +563,16 @@ else:
             else:
                 p_df = df_h
             if not p_df.empty:
-                # ensure date parsing for sorting
-                p_df['Дата_dt'] = pd.to_datetime(p_df['Дата'], format='%d.%m.%Y', errors='coerce')
+                # ensure date parsing for sorting; handle if 'Дата' missing
+                if 'Дата' in p_df.columns:
+                    p_df['Дата_dt'] = pd.to_datetime(p_df['Дата'], format='%d.%m.%Y', errors='coerce')
+                else:
+                    p_df['Дата_dt'] = pd.NaT
+                # sort by parsed date first, then fall back to original index
+                p_df = p_df.sort_values(by='Дата_dt', ascending=False, na_position='last')
                 cols = ["Дата", "Час завдання", "Підрозділ", "Оператор", "Дрон", "Маршрут", "Взльот", "Посадка", "Тривалість (хв)", "Дистанція (м)", "Результат", "Примітки", "Медіа (статус)", "Номер АКБ", "Цикли АКБ"]
                 available_cols = [c for c in cols if c in p_df.columns]
-                st.dataframe(p_df[available_cols].sort_values(by='Дата_dt', ascending=False).drop(columns=['Дата_dt'], errors='ignore'), use_container_width=True)
+                st.dataframe(p_df[available_cols], use_container_width=True)
             else:
                 st.info("Архів порожній для цього оператора.")
         else:
