@@ -352,7 +352,7 @@ else:
             
             df_v = df_t[[c for c in cols_to_show if c in df_t.columns]]
             df_v = df_v.rename(columns=col_mapping)
-            st.dataframe(df_v, use_container_width=True)
+            st.dataframe(df_v, width='stretch')
             
             cb1, cb2, cb3 = st.columns(3)
             if cb1.button("🗑️ Видалити останній"):
@@ -467,7 +467,7 @@ else:
             p_df = df_h[df_h['Оператор'] == st.session_state.user['name']] if st.session_state.role == "Pilot" else df_h
             if not p_df.empty:
                 cols = ["Дата", "Час завдання", "Підрозділ", "Оператор", "Дрон", "Маршрут", "Зліт", "Посадка", "Тривалість (хв)", "Дистанція (м)", "Результат", "Примітки", "Медіа (статус)", "Номер АКБ", "Цикли АКБ"]
-                st.dataframe(p_df[[c for c in cols if c in p_df.columns]].sort_values(by="Дата", ascending=False), use_container_width=True)
+                st.dataframe(p_df[[c for c in cols if c in p_df.columns]].sort_values(by="Дата", ascending=False), width='stretch')
             else:
                 st.info("Архів порожній.")
         else:
