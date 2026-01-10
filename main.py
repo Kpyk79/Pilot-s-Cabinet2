@@ -5,7 +5,7 @@ import requests
 import time
 from datetime import datetime, time as d_time, timedelta
 import json
-import io  # Необхідно для роботи з буфером пам'яті
+import io  
 
 # --- 1. КОНФІГУРАЦІЯ СТОРІНКИ ---
 st.set_page_config(page_title="UAV Pilot Cabinet v7.3", layout="wide", page_icon="🛡️")
@@ -70,7 +70,6 @@ def format_to_time_str(total_minutes):
 
 @st.cache_data
 def convert_df_to_excel(df):
-    # Фільтрація та перейменування згідно запиту
     mapping = {"Дрон": "БпЛА"}
     export_df = df.copy().rename(columns=mapping)
     
@@ -82,15 +81,14 @@ def convert_df_to_excel(df):
     final_cols = [c for c in target_cols if c in export_df.columns]
     export_df = export_df[final_cols]
 
-    # Створення Excel-файлу в пам'яті зі стилями
     output = io.BytesIO()
+    # Саме цей блок вимагає бібліотеку xlsxwriter
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         export_df.to_excel(writer, index=False, sheet_name='Архів_Польотів')
         
         workbook  = writer.book
         worksheet = writer.sheets['Архів_Польотів']
         
-        # Визначення стилів: Межі + Вирівнювання
         border_format = workbook.add_format({
             'border': 1,
             'align': 'center',
@@ -107,10 +105,11 @@ def convert_df_to_excel(df):
             'valign': 'vcenter'
         })
 
-        # Застосування форматів та автопідбір ширини стовпців
         for col_num, value in enumerate(export_df.columns.values):
             worksheet.write(0, col_num, value, header_format)
-            column_len = max(export_df[value].astype(str).map(len).max(), len(value)) + 2
+            # Автопідбір ширини
+            data_max = export_df[value].astype(str).map(len).max()
+            column_len = max(data_max, len(value)) + 2
             worksheet.set_column(col_num, col_num, min(column_len, 30), border_format)
             
     return output.getvalue()
@@ -219,7 +218,6 @@ if not st.session_state.logged_in:
             saved = load_user_credentials()
             u = st.selectbox("Підрозділ:", UNITS, index=UNITS.index(saved['unit']) if saved['unit'] in UNITS else 0)
             n = st.text_input("Звання та Прізвище:", value=saved['name'], placeholder="наприклад: ст.с-т Іваненко")
-            
             if st.button("УВІЙТИ") and n:
                 save_user_credentials(u, n)
                 st.session_state.logged_in, st.session_state.role, st.session_state.user = True, "Pilot", {"unit": u, "name": n}
@@ -343,24 +341,15 @@ else:
             app_unit = st.selectbox("1. Заявник:", UNITS, index=UNITS.index(st.session_state.user['unit']) if st.session_state.user['unit'] in UNITS else 0)
             app_drones = st.multiselect("2. Тип БпЛА:", get_drones_for_unit(app_unit))
             app_dates = st.date_input("3. Дата здійснення польоту:", value=(datetime.now(), datetime.now() + timedelta(days=1)))
-            c_t1, c_t2 = st.columns(2)
-            a_t1 = c_t1.time_input("4. Час роботи з:", d_time(8,0))
-            a_t2 = c_t2.time_input("до:", d_time(20,0))
-            app_route = st.text_area("5. Населений пункт (маршрут):")
-            c_h1, c_h2 = st.columns(2)
-            a_h = c_h1.text_input("6. Висота (м):", "до 500 м")
-            a_r = c_h2.text_input("7. Радіус (км):", "до 5 км")
-            app_purp = st.selectbox("8. Мета:", ["патрулювання ділянки відповідальності", "за оперативною необхідністю", "навчально-тренувальні польоти"])
-            c_cont, c_phone = st.columns(2)
-            app_cont = c_cont.text_input("9. Контактна особа:", value=st.session_state.app_contact if st.session_state.app_contact else st.session_state.user['name'])
-            app_phone = c_phone.text_input("10. Номер телефону:", value=st.session_state.app_phone)
-            
+            a_t1, a_t2 = st.columns(2)[0].time_input("4. Час з:", d_time(8,0)), st.columns(2)[1].time_input("до:", d_time(20,0))
+            app_route = st.text_area("5. Маршрут:")
+            app_cont = st.text_input("9. Контактна особа:", value=st.session_state.app_contact if st.session_state.app_contact else st.session_state.user['name'])
+            app_phone = st.text_input("10. Телефон:", value=st.session_state.app_phone)
         if st.button("✨ СФОРМУВАТИ ТЕКСТ ЗАЯВКИ"):
-            st.session_state.app_contact = app_cont
-            st.session_state.app_phone = app_phone
+            st.session_state.app_contact, st.session_state.app_phone = app_cont, app_phone
             d_str = ", ".join(app_drones) if app_drones else "не вказано"
             dt_r = f"з {app_dates[0].strftime('%d.%m.%Y')} по {app_dates[1].strftime('%d.%m.%Y')}" if isinstance(app_dates, tuple) and len(app_dates) == 2 else app_dates[0].strftime('%d.%m.%Y')
-            f_txt = f"ЗАЯВКА НА ПОЛІТ\n1. Заявник: в/ч 2196 ({app_unit})\n2. Тип БпЛА: {d_str}\n3. Дата здійснення польоту: {dt_r}\n4. Час роботи: з {a_t1.strftime('%H:%M')} по {a_t2.strftime('%H:%M')}\n5. Населений пункт (маршрут): {app_route}\n6. Висота роботи (м): {a_h}\n7. Радіус роботи (км): {a_r}\n8. Мета польоту: {app_purp}\n9. Контактна особа: {app_cont}, тел: {app_phone}"
+            f_txt = f"ЗАЯВКА НА ПОЛІТ\n1. Заявник: в/ч 2196 ({app_unit})\n2. Тип БпЛА: {d_str}\n3. Дата здійснення польоту: {dt_r}\n4. Час роботи: з {a_t1.strftime('%H:%M')} по {a_t2.strftime('%H:%M')}\n5. Населений пункт (маршрут): {app_route}\n6. Висота роботи (м): до 500 м\n7. Радіус роботи (км): до 5 км\n8. Мета польоту: патрулювання\n9. Контактна особа: {app_cont}, тел: {app_phone}"
             st.code(f_txt, language="text")
 
     with tab_hist:
@@ -369,7 +358,7 @@ else:
         if not df_h.empty and "Оператор" in df_h.columns:
             p_df = df_h[df_h['Оператор'] == st.session_state.user['name']] if st.session_state.role == "Pilot" else df_h
             if not p_df.empty:
-                # ЕКСПОРТ В EXCEL З ОФОРМЛЕННЯМ
+                # Експорт в Excel через xlsxwriter
                 excel_data = convert_df_to_excel(p_df)
                 st.download_button(
                     label="📥 ЗАВАНТАЖИТИ АРХІВ (Excel)",
