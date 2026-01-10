@@ -362,7 +362,12 @@ else:
             if cb2.button("💾 Зберегти в Хмару"):
                 df_d = load_data("Drafts")
                 df_d = df_d[df_d['Оператор'] != st.session_state.user['name']] if not df_d.empty and "Оператор" in df_d.columns else df_d
-                conn.update(worksheet="Drafts", data=pd.concat([df_d, pd.DataFrame(st.session_state.temp_flights).drop(columns=['files'], errors='ignore')], ignore_index=True))
+                
+                # Підготовка та очищення даних перед оновленням
+                df_new_drafts = pd.DataFrame(st.session_state.temp_flights).drop(columns=['files'], errors='ignore')
+                full_drafts_df = pd.concat([df_d, df_new_drafts], ignore_index=True).astype(str).replace(['None', 'nan', '<NA>'], '')
+                
+                conn.update(worksheet="Drafts", data=full_drafts_df)
                 st.success("💾 Збережено!")
             
             if cb3.button("🚀 ВІДПРАВИТИ ВСІ ДАНІ"):
@@ -374,14 +379,18 @@ else:
                     row.pop('files', None)
                     row["Медіа (статус)"] = "З фото" if f.get('files') else "Текст"
                     final_to_db.append(row)
+                
                 db_m = load_data("Sheet1")
-                conn.update(worksheet="Sheet1", data=pd.concat([db_m, pd.DataFrame(final_to_db)], ignore_index=True))
+                
+                # Підготовка та очищення даних перед оновленням в основну базу
+                final_df_to_save = pd.concat([db_m, pd.DataFrame(final_to_db)], ignore_index=True).astype(str).replace(['None', 'nan', '<NA>'], '')
+                conn.update(worksheet="Sheet1", data=final_df_to_save)
                 
                 # Очищуємо Drafts після успішної відправки
                 df_d = load_data("Drafts")
                 if not df_d.empty and "Оператор" in df_d.columns:
                     df_d = df_d[df_d['Оператор'] != st.session_state.user['name']]
-                    conn.update(worksheet="Drafts", data=df_d)
+                    conn.update(worksheet="Drafts", data=df_d.astype(str))
                 
                 # Очищуємо сесійний дрон після відправки
                 st.session_state.session_drone = None
