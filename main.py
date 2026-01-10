@@ -294,13 +294,25 @@ else:
         with st.container(border=True):
             app_unit = st.selectbox("1. Заявник:", UNITS, index=UNITS.index(st.session_state.user['unit']) if st.session_state.user['unit'] in UNITS else 0)
             app_drones = st.multiselect("2. Тип БпЛА:", get_drones_for_unit(app_unit))
-            app_dates = st.date_input("3. Дата:", value=(datetime.now(), datetime.now() + timedelta(days=1)))
-            a_t1, a_t2 = st.columns(2)[0].time_input("4. Час з:", d_time(8,0)), st.columns(2)[1].time_input("до:", d_time(20,0))
-            app_route = st.text_area("5. Маршрут:")
-            app_cont = st.text_input("9. Контактна особа:", value=st.session_state.user['name'])
-        if st.button("✨ СФОРМУВАТИ"):
+            app_dates = st.date_input("3. Дата здійснення польоту:", value=(datetime.now(), datetime.now() + timedelta(days=1)))
+            c_t1, c_t2 = st.columns(2)
+            a_t1 = c_t1.time_input("4. Час роботи з:", d_time(8,0))
+            a_t2 = c_t2.time_input("до:", d_time(20,0))
+            app_route = st.text_area("5. Населений пункт (маршрут):")
+            c_h1, c_h2 = st.columns(2)
+            a_h = c_h1.text_input("6. Висота (м):", "до 500 м")
+            a_r = c_h2.text_input("7. Радіус (км):", "до 5 км")
+            app_purp = st.selectbox("8. Мета:", ["патрулювання ділянки відповідальності", "за оперативною необхідністю", "навчально-тренувальні польоти"])
+            c_cont, c_phone = st.columns(2)
+            app_cont = c_cont.text_input("9. Контактна особа:", value=st.session_state.app_contact if st.session_state.app_contact else st.session_state.user['name'])
+            app_phone = c_phone.text_input("10. Номер телефону:", value=st.session_state.app_phone)
+            
+        if st.button("✨ СФОРМУВАТИ ТЕКСТ ЗАЯВКИ"):
+            st.session_state.app_contact = app_cont
+            st.session_state.app_phone = app_phone
             d_str = ", ".join(app_drones) if app_drones else "не вказано"
-            f_txt = f"ЗАЯВКА\nЗаявник: {app_unit}\nТип БпЛА: {d_str}\nЧас: {a_t1.strftime('%H:%M')}-{a_t2.strftime('%H:%M')}\nМаршрут: {app_route}\nКонтакт: {app_cont}"
+            dt_r = f"з {app_dates[0].strftime('%d.%m.%Y')} по {app_dates[1].strftime('%d.%m.%Y')}" if isinstance(app_dates, tuple) and len(app_dates) == 2 else app_dates[0].strftime('%d.%m.%Y')
+            f_txt = f"ЗАЯВКА НА ПОЛІТ\n1. Заявник: в/ч 2196 ({app_unit})\n2. Тип БпЛА: {d_str}\n3. Дата здійснення польоту: {dt_r}\n4. Час роботи: з {a_t1.strftime('%H:%M')} по {a_t2.strftime('%H:%M')}\n5. Населений пункт (маршрут): {app_route}\n6. Висота роботи (м): {a_h}\n7. Радіус роботи (км): {a_r}\n8. Мета польоту: {app_purp}\n9. Контактна особа: {app_cont}, тел: {app_phone}"
             st.code(f_txt, language="text")
 
     with tab_hist:
@@ -319,22 +331,16 @@ else:
             df_s['Дата_dt'] = pd.to_datetime(df_s['Дата'], format='%d.%m.%Y', errors='coerce')
             df_s = df_s.dropna(subset=['Дата_dt'])
             if not df_s.empty:
-                # ВИПРАВЛЕННЯ: Створення явних стовпців для сортування
                 df_s['Рік'] = df_s['Дата_dt'].dt.year
                 df_s['Місяць_№'] = df_s['Дата_dt'].dt.month
-                
                 rs = df_s.groupby(['Рік', 'Місяць_№']).agg(
                     Польоти=('Дата', 'count'), 
                     Затримання=('Результат', lambda x: (x == "Затримання").sum()),
                     Хв=('Тривалість (хв)', 'sum')
                 ).reset_index()
-                
                 rs['Період'] = rs.apply(lambda x: f"{UKR_MONTHS.get(int(x['Місяць_№']), '???')} {int(x['Рік'])}", axis=1)
                 rs['Наліт'] = rs['Хв'].apply(format_to_time_str)
-                
-                # Сортуємо по прихованих числових стовпцях
-                rs = rs.sort_values(by=['Рік', 'Місяць_№'], ascending=False)
-                st.table(rs[['Період', 'Польоти', 'Затримання', 'Наліт']])
+                st.table(rs[['Період', 'Польоти', 'Затримання', 'Наліт']].sort_values(by=['Рік', 'Місяць_№'], ascending=False))
 
     with tab_info:
         st.header("ℹ️ Довідка")
@@ -350,7 +356,6 @@ else:
         with st.expander("🛡️ ІНСТРУКЦІЯ КОРИСТУВАЧА", expanded=False):
             st.markdown("""**1. 🔑 Вхід у систему**
 * Оберіть Підрозділ, введіть Звання та Прізвище.
-* При повторному вході дані автоматично підставляться.
 * Натисніть «Увійти».
 
 **2. 🚀 Вкладка «Польоти»**
@@ -363,6 +368,5 @@ else:
 
 **4. 📋 Вкладка «Заявка»**
 * УВАГА: Розділ НЕ відправляє заявки автоматично!
-* Оберіть параметри польоту та натисніть «Сформувати текст заявки».
-* Скопіюйте текст та відправте самостійно через месенджери.""")
+* Оберіть параметри польоту та натисніть «Сформувати текст заявки».""")
         st.markdown("<div style='text-align: center; color: black;'>Слава Україні! 🇺🇦</div>", unsafe_allow_html=True)
