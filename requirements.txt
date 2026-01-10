@@ -5,4 +5,7 @@ st-gsheets-connection
 python-docx
 google-api-python-client
 google-auth
+requestsstreamlit
+streamlit-gsheets
 requests
+xlsxwriter
