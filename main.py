@@ -31,15 +31,15 @@ ADMIN_PASSWORD = "admin_secret"
 
 UKR_MONTHS = {1: "січень", 2: "лютий", 3: "березень", 4: "квітень", 5: "травень", 6: "червень", 7: "липень", 8: "серпень", 9: "вересень", 10: "жовтень", 11: "листопад", 12: "грудень"}
 
-# --- 3. ЗБЕРЕЖЕННЯ ТА ЗАВАНТАЖЕННЯ ДАНИХ ---
+# --- 3. ЗБЕРЕЖЕННЯ ТА ЗАВАНТАЖЕННЯ ДАНИХ (Persistence) ---
+if 'saved_credentials' not in st.session_state:
+    st.session_state.saved_credentials = {"unit": UNITS[0], "name": ""}
+
 def save_user_credentials(unit, name):
-    try:
-        credentials = {"unit": unit, "name": name, "timestamp": datetime.now().isoformat()}
-        st.session_state.saved_credentials = credentials
-    except: pass
+    st.session_state.saved_credentials = {"unit": unit, "name": name}
 
 def load_user_credentials():
-    return st.session_state.get('saved_credentials', {"unit": UNITS[0], "name": ""})
+    return st.session_state.saved_credentials
 
 # --- 4. ДОПОМІЖНІ ФУНКЦІЇ ---
 def smart_time_parse(val):
@@ -127,14 +127,13 @@ def send_telegram_msg(all_fl):
             for img in all_photos:
                 requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto", files={'photo': (img.name, img.getvalue(), img.type)}, data={'chat_id': str(TG_CHAT_ID), 'caption': report, 'parse_mode': 'Markdown'})
     else:
-        requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage", data={'chat_id': str(TG_CHAT_ID), 'text': report, 'parse_mode': 'Markdown'})
+        requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage", data={'chat_id': str(TG_CHAT_ID), 'text': report, 'parse_mode': 'Markdown'} )
 
 # --- 6. ІНІЦІАЛІЗАЦІЯ СТАНУ ---
 if 'temp_flights' not in st.session_state: st.session_state.temp_flights = []
 if 'logged_in' not in st.session_state: st.session_state.logged_in = False
 if 'splash_done' not in st.session_state: st.session_state.splash_done = False
 if 'uploader_key' not in st.session_state: st.session_state.uploader_key = 0
-if 'saved_credentials' not in st.session_state: st.session_state.saved_credentials = {"unit": UNITS[0], "name": ""}
 if 'app_contact' not in st.session_state: st.session_state.app_contact = ""
 if 'app_phone' not in st.session_state: st.session_state.app_phone = ""
 if 'session_drone' not in st.session_state: st.session_state.session_drone = None
@@ -149,6 +148,8 @@ st.markdown("""
     .splash-container { text-align: center; margin-top: 15%; }
     .slogan-box { color: #2E7D32; font-family: 'Courier New', monospace; font-weight: bold; font-size: 1.5em; border-top: 2px solid #2E7D32; border-bottom: 2px solid #2E7D32; padding: 20px 0; margin: 20px 0; letter-spacing: 2px; }
     .contact-card { background-color: #e8f5e9; padding: 15px; border-radius: 10px; border-left: 5px solid #2E7D32; margin-bottom: 15px; color: black !important; }
+    .contact-title { font-size: 1.1em; font-weight: bold; color: black !important; margin-bottom: 5px; }
+    .contact-desc { font-size: 0.9em; color: black !important; font-style: italic; margin-bottom: 10px; line-height: 1.3; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -168,9 +169,9 @@ if not st.session_state.logged_in:
     with st.container(border=True):
         if role == "Пілот":
             saved = load_user_credentials()
-            unit_index = UNITS.index(saved['unit']) if saved['unit'] in UNITS else 0
-            u = st.selectbox("Підрозділ:", UNITS, index=unit_index)
+            u = st.selectbox("Підрозділ:", UNITS, index=UNITS.index(saved['unit']) if saved['unit'] in UNITS else 0)
             n = st.text_input("Звання та Прізвище:", value=saved['name'], placeholder="наприклад: ст.с-т Іваненко")
+            
             if st.button("УВІЙТИ") and n:
                 save_user_credentials(u, n)
                 st.session_state.logged_in, st.session_state.role, st.session_state.user = True, "Pilot", {"unit": u, "name": n}
@@ -315,26 +316,45 @@ else:
         if not df_s.empty and "Оператор" in df_s.columns:
             if st.session_state.role == "Pilot": 
                 df_s = df_s[df_s['Оператор'] == st.session_state.user['name']]
-            
-            # Парсинг дати з санітизацією
             df_s['Дата_dt'] = pd.to_datetime(df_s['Дата'], format='%d.%m.%Y', errors='coerce')
             df_s = df_s.dropna(subset=['Дата_dt'])
-            
             if not df_s.empty:
-                # ВИПРАВЛЕННЯ ПОМИЛКИ: Явне іменування рівнів групування для уникнення колізії при reset_index
+                # ДОДАНО КОЛОНКУ "Затримання" через агрегацію з умовою
                 rs = df_s.groupby(
                     [df_s['Дата_dt'].dt.year.rename('Рік'), df_s['Дата_dt'].dt.month.rename('Місяць_№')]
                 ).agg(
                     Польоти=('Дата', 'count'), 
+                    Затримання=('Результат', lambda x: (x == "Затримання").sum()),
                     Хв=('Тривалість (хв)', 'sum')
                 ).reset_index()
-                
-                # Форматування для відображення
                 rs['Період'] = rs.apply(lambda x: f"{UKR_MONTHS.get(int(x['Місяць_№']), '???')} {int(x['Рік'])}", axis=1)
                 rs['Наліт'] = rs['Хв'].apply(format_to_time_str)
-                
-                st.table(rs[['Період', 'Польоти', 'Наліт']].sort_values(by=['Період'], ascending=False))
+                st.table(rs[['Період', 'Польоти', 'Затримання', 'Наліт']].sort_values(by=['Рік', 'Місяць_№'], ascending=False))
 
     with tab_info:
         st.header("ℹ️ Довідка")
-        st.markdown("<div class='contact-card'><b>Техпідтримка:</b> Олександр (+380502310609)</div>", unsafe_allow_html=True)
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.markdown("<div class='contact-card'><div class='contact-title'>🎓 Інструктор</div><div class='contact-desc'>Питання тактики застосування, налаштування системи та спеціалізованого ПЗ БпАС.</div><b>Олександр</b><br>+380502310609</div>", unsafe_allow_html=True)
+        with c2:
+            st.markdown("<div class='contact-card'><div class='contact-title'>🔧 Технік-майстер</div><div class='contact-desc'>Механічні пошкодження майна, ремонт, збої апаратної частини.</div><b>Сергій</b><br>+380997517054</div>", unsafe_allow_html=True)
+        with c3:
+            st.markdown("<div class='contact-card'><div class='contact-title'>📦 Начальник складу</div><div class='contact-desc'>Облік майна, оформлення актів переміщення та передача обладнання.</div><b>Ірина</b><br>+380667869701</div>", unsafe_allow_html=True)
+        st.write("---")
+        st.subheader("📖 Повна документація")
+        with st.expander("🛡️ ІНСТРУКЦІЯ КОРИСТУВАЧА", expanded=False):
+            st.markdown("""**1. 🔑 Вхід у систему**
+* Оберіть Підрозділ, введіть Звання та Прізвище.
+* Натисніть «Увійти».
+
+**2. 🚀 Вкладка «Польоти»**
+* **Крок А (Завдання):** Встановіть Дату, Час зміни та оберіть БпЛА на зміну.
+* **Крок Б (Виліт):** Вкажіть час Зльоту/Посадки, Відстань, Номер АКБ та Цикли.
+* **Крок В (Управління):** Тисніть «➕ Додати у список». В кінці зміни — «🚀 ВІДПРАВИТИ ВСІ ДАНІ».
+
+**3. 📡 Вкладка «ЦУС»**
+* Система сама розбиває польоти на вікна «До 00:00» та «Після 00:00».
+
+**4. 📋 Вкладка «Заявка»**
+* УВАГА: Розділ НЕ відправляє заявки автоматично! Оберіть параметри польоту та натисніть «Сформувати текст заявки».""")
+        st.markdown("<div style='text-align: center; color: black;'>Слава Україні! 🇺🇦</div>", unsafe_allow_html=True)
