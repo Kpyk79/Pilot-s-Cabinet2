@@ -183,8 +183,6 @@ st.markdown("""
     .splash-container { text-align: center; margin-top: 15%; }
     .slogan-box { color: #2E7D32; font-family: 'Courier New', monospace; font-weight: bold; font-size: 1.2em; border-top: 2px solid #2E7D32; border-bottom: 2px solid #2E7D32; padding: 20px 0; margin: 20px 0; letter-spacing: 1px; font-style: italic; }
     .contact-card { background-color: #e8f5e9; padding: 15px; border-radius: 10px; border-left: 5px solid #2E7D32; margin-bottom: 15px; color: black !important; }
-    .contact-title { font-size: 1.1em; font-weight: bold; color: black !important; margin-bottom: 5px; }
-    .contact-desc { font-size: 0.9em; color: black !important; font-style: italic; margin-bottom: 10px; line-height: 1.3; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -297,7 +295,6 @@ else:
                     df_d = df_d[df_d['Оператор'] != st.session_state.user['name']]
                     conn.update(worksheet="Drafts", data=df_d.astype(str))
                 st.session_state.session_drone, st.session_state.temp_flights = None, []
-                # Випадкове пророцтво після відправки
                 st.balloons()
                 st.success(f"✅ Успішно відправлено! \n\n✨ Печиво пророкує: *{random.choice(QUOTES)}*")
                 time.sleep(2); st.rerun()
@@ -346,15 +343,31 @@ else:
         st.header("📊 Аналітика")
         df_s = load_data("Sheet1")
         if not df_s.empty and "Оператор" in df_s.columns:
-            if st.session_state.role == "Pilot": df_s = df_s[df_s['Оператор'] == st.session_state.user['name']]
+            if st.session_state.role == "Pilot": 
+                df_s = df_s[df_s['Оператор'] == st.session_state.user['name']]
             df_s['Дата_dt'] = pd.to_datetime(df_s['Дата'], format='%d.%m.%Y', errors='coerce')
             df_s = df_s.dropna(subset=['Дата_dt'])
             if not df_s.empty:
-                df_s['Рік'], df_s['Місяць_№'] = df_s['Дата_dt'].dt.year, df_s['Дата_dt'].dt.month
-                rs = df_s.groupby(['Рік', 'Місяць_№']).agg(Польоти=('Дата', 'count'), Затримання=('Результат', lambda x: (x == "Затримання").sum()), Хв=('Тривалість (хв)', 'sum')).reset_index()
+                # 1. Створюємо допоміжні стовпці
+                df_s['Рік'] = df_s['Дата_dt'].dt.year
+                df_s['Місяць_№'] = df_s['Дата_dt'].dt.month
+                
+                # 2. Групуємо
+                rs = df_s.groupby(['Рік', 'Місяць_№']).agg(
+                    Польоти=('Дата', 'count'), 
+                    Затримання=('Результат', lambda x: (x == "Затримання").sum()),
+                    Хв=('Тривалість (хв)', 'sum')
+                ).reset_index()
+                
+                # 3. Додаємо текстові поля
                 rs['Період'] = rs.apply(lambda x: f"{UKR_MONTHS.get(int(x['Місяць_№']), '???')} {int(x['Рік'])}", axis=1)
                 rs['Наліт'] = rs['Хв'].apply(format_to_time_str)
-                st.table(rs[['Період', 'Польоти', 'Затримання', 'Наліт']].sort_values(by=['Рік', 'Місяць_№'], ascending=False))
+                
+                # 4. ВИПРАВЛЕННЯ: Сортуємо ВЕСЬ DataFrame rs, до того як вибрати колонки для відображення
+                rs_sorted = rs.sort_values(by=['Рік', 'Місяць_№'], ascending=False)
+                
+                # 5. Відображаємо лише потрібні колонки
+                st.table(rs_sorted[['Період', 'Польоти', 'Затримання', 'Наліт']])
 
     with tab_info:
         st.header("ℹ️ Довідка")
