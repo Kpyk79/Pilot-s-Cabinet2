@@ -5,7 +5,6 @@ import pandas as pd
 import requests
 import time
 from datetime import datetime, time as d_time, timedelta
-
 import json
 import traceback
 import os
@@ -30,7 +29,6 @@ def get_secret(key):
 TG_TOKEN = get_secret("TELEGRAM_BOT_TOKEN")
 TG_CHAT_ID = get_secret("TELEGRAM_CHAT_ID")
 
-# Path to save full API error dump (can be overridden by env GSPREAD_ERROR_PATH)
 OUTPUT_ERROR_PATH = os.environ.get("GSPREAD_ERROR_PATH", "/tmp/gspread_api_error.json")
 
 # --- 2. КОНСТАНТИ ТА СЛОВНИКИ ---
@@ -102,7 +100,6 @@ def save_api_error(e: APIError, path: str = OUTPUT_ERROR_PATH):
         print(f"Failed to write API error file: {write_err}")
         print((text or "")[:2000])
 
-# normalize dataframe columns (strip whitespace and BOM)
 def normalize_df_columns(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
@@ -111,7 +108,6 @@ def normalize_df_columns(df: pd.DataFrame) -> pd.DataFrame:
     df.columns = cols
     return df
 
-# safe conn update wrapper
 def safe_conn_update(conn, **kwargs):
     try:
         return conn.update(**kwargs)
@@ -124,14 +120,12 @@ def safe_conn_update(conn, **kwargs):
         st.error("Несподівана помилка при зверненні до Google Sheets. Перевірте логи.")
         raise
 
-# helper to load data and normalize columns + strip text fields
 def load_data(ws="Sheet1"):
     try:
         df = conn.read(worksheet=ws, ttl=0)
         if df is None or df.empty:
             return pd.DataFrame()
         df = normalize_df_columns(df)
-        # ensure string columns are stripped
         for c in df.select_dtypes(include=[object]).columns:
             df[c] = df[c].astype(str).str.strip()
         return df.dropna(how="all")
@@ -139,7 +133,6 @@ def load_data(ws="Sheet1"):
         traceback.print_exc()
         return pd.DataFrame()
 
-# write dataframe to sheet, optionally remove existing rows for a given operator
 def write_df_to_sheet(worksheet_name: str, new_df: pd.DataFrame, remove_operator: str | None = None) -> None:
     new_df = normalize_df_columns(new_df)
     try:
@@ -155,13 +148,10 @@ def write_df_to_sheet(worksheet_name: str, new_df: pd.DataFrame, remove_operator
     if existing.empty:
         out = new_df.reset_index(drop=True)
     else:
-        # ensure same columns: take union
         out = pd.concat([existing, new_df], ignore_index=True, sort=False).reset_index(drop=True)
 
-    # Safe update
     safe_conn_update(conn, worksheet=worksheet_name, data=out)
 
-# remember user in Settings sheet for persistence between sessions
 def save_remembered_user(name: str, unit: str):
     try:
         df = pd.DataFrame([{"key": "last_user", "Оператор": name.strip(), "Підрозділ": unit.strip()}])
@@ -173,24 +163,20 @@ def load_remembered_user():
     try:
         df = load_data("Settings")
         if not df.empty:
-            # try to find row with key last_user
             if 'key' in df.columns:
                 row = df[df['key'] == 'last_user']
                 if not row.empty:
                     return row.iloc[0].get('Оператор', ''), row.iloc[0].get('Підрозділ', UNITS[0])
-            # else take first row
             row = df.iloc[0]
             return row.get('Оператор', ''), row.get('Підрозділ', UNITS[0])
     except Exception:
         traceback.print_exc()
     return '', UNITS[0]
 
-# robust drone lookup: accept different column names
 def get_drones_for_unit(unit):
     try:
         df = load_data("DronesDB")
         if df.empty: return []
-        # possible name variants
         unit_col = None
         for c in df.columns:
             if c.lower().strip() in ['підрозділ', 'pidrozdil', 'unit', 'підрозділ:']:
@@ -199,13 +185,10 @@ def get_drones_for_unit(unit):
         if unit_col is None and 'Підрозділ' in df.columns:
             unit_col = 'Підрозділ'
         if unit_col is None:
-            # try first column
             unit_col = df.columns[0]
-
         unit_drones = df[df[unit_col].astype(str).str.strip() == unit]
         if unit_drones.empty: return []
 
-        # possible model and sn columns
         model_col = None
         sn_col = None
         for c in df.columns:
@@ -214,7 +197,6 @@ def get_drones_for_unit(unit):
                 model_col = c
             if 's/n' in cl or cl == 'sn' or 's_n' in cl or 'serial' in cl:
                 sn_col = c
-        # fallback names
         if model_col is None:
             for alt in ['Модель БпЛА', 'Модель']:
                 if alt in df.columns:
@@ -245,74 +227,34 @@ def get_drones_for_unit(unit):
 # --- 4. РОБОТА З БАЗОЮ ТА TG ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# Optional: basic config check for spreadsheet secret
-try:
-    _spreadsheet_cfg = st.secrets.get("connections", {}).get("gsheets", {}).get("spreadsheet")
-    if not _spreadsheet_cfg:
-        st.warning("Налаштування Google Sheets не знайдено: додайте 'connections.gsheets.spreadsheet' у secrets.")
-except Exception:
-    pass
-
-def send_telegram_msg(all_fl):
-    if not TG_TOKEN or not TG_CHAT_ID: return
-    first = all_fl[0]
-    flights_details = []
-    for i, f in enumerate(all_fl):
-        flight_text = f"{i+1}. {f['Взльот']}-{f['Посадка']} ({f['Тривалість (хв)']} хв)\n   Результат: {f['Результат']}"
-        if f.get('Примітки'):
-            flight_text += f"\n   Примітки: {f['Примітки']}"
-        flights_details.append(flight_text)
-    flights_txt = "\n".join(flights_details)
-    report = f"🚁 **Донесення: {first['Підрозділ']}**\n👤 **Пілот:** {first['Оператор']}\n📅 **Дата:** {first['Дата']}\n⏰ **Час завдання:** {first['Час завдання']}\n🛡 **БпЛА:** {first['Дрон']}\n━━━━━━━━━━━━━━━\n🚀 **Вильоти:**\n{flights_txt}"
-    all_photos = []
-    for fl in all_fl:
-        if fl.get('files'):
-            for img in fl['files']:
-                all_photos.append(img)
-    if all_photos:
-        media_group = []
-        for idx, img in enumerate(all_photos):
-            photo_data = {'type': 'photo', 'media': f'attach://photo{idx}'}
-            if idx == 0:
-                photo_data['caption'] = report
-                photo_data['parse_mode'] = 'Markdown'
-            media_group.append(photo_data)
-        files = {f'photo{idx}': (getattr(img, 'name', f'photo{idx}.jpg'), img.getvalue(), getattr(img, 'type', 'image/jpeg')) for idx, img in enumerate(all_photos)}
-        try:
-            requests.post(
-                f"https://api.telegram.org/bot{TG_TOKEN}/sendMediaGroup",
-                data={'chat_id': str(TG_CHAT_ID), 'media': json.dumps(media_group)},
-                files=files
-            )
-        except Exception:
-            traceback.print_exc()
-    else:
-        try:
-            requests.post(
-                f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-                data={'chat_id': str(TG_CHAT_ID), 'text': report, 'parse_mode': 'Markdown'}
-            )
-        except Exception:
-            traceback.print_exc()
-
 # --- 5. ІНІЦІАЛІЗАЦІЯ СТАНУ ---
-if 'temp_flights' not in st.session_state: st.session_state.temp_flights = []
-if 'logged_in' not in st.session_state: st.session_state.logged_in = False
-if 'splash_done' not in st.session_state: st.session_state.splash_done = False
-if 'uploader_key' not in st.session_state: st.session_state.uploader_key = 0
-if 'last_unit' not in st.session_state: st.session_state.last_unit = UNITS[0]
-if 'last_name' not in st.session_state: st.session_state.last_name = ""
-if 'remember_credentials' not in st.session_state: st.session_state.remember_credentials = True
-if 'app_contact' not in st.session_state: st.session_state.app_contact = ""
-if 'app_phone' not in st.session_state: st.session_state.app_phone = ""
+if 'temp_flights' not in st.session_state:
+    st.session_state['temp_flights'] = []
+
+if 'logged_in' not in st.session_state:
+    st.session_state['logged_in'] = False
+if 'splash_done' not in st.session_state:
+    st.session_state['splash_done'] = False
+if 'uploader_key' not in st.session_state:
+    st.session_state['uploader_key'] = 0
+if 'last_unit' not in st.session_state:
+    st.session_state['last_unit'] = UNITS[0]
+if 'last_name' not in st.session_state:
+    st.session_state['last_name'] = ""
+if 'remember_credentials' not in st.session_state:
+    st.session_state['remember_credentials'] = True
+if 'app_contact' not in st.session_state:
+    st.session_state['app_contact'] = ""
+if 'app_phone' not in st.session_state:
+    st.session_state['app_phone'] = ""
 
 # Load remembered user from Settings sheet (persisted across app restarts)
 try:
     remembered_name, remembered_unit = load_remembered_user()
     if remembered_name:
-        st.session_state.last_name = remembered_name
+        st.session_state['last_name'] = remembered_name
     if remembered_unit:
-        st.session_state.last_unit = remembered_unit
+        st.session_state['last_unit'] = remembered_unit
 except Exception:
     pass
 
@@ -337,57 +279,62 @@ if not st.session_state.splash_done:
     container = st.empty()
     with container.container():
         st.markdown("<div class='splash-container'><h1 style='font-size: 4em;'>🛡️</h1><h1>UAV PILOT CABINET</h1><div class='slogan-box'>СТАЛЕВИЙ ОБЛІК ДЛЯ СТАЛЕВОГО КОРДОНУ</div></div>", unsafe_allow_html=True)
-        my_bar = st.progress(0, text="Ін��ціалізація...")
+        my_bar = st.progress(0, text="Інціалізація...")
         for p in range(100): time.sleep(0.01); my_bar.progress(p + 1)
-        st.session_state.splash_done = True; st.rerun()
+        st.session_state['splash_done'] = True
+        st.rerun()
 
 # --- 8. ІНТЕРФЕЙС ВХОДУ ---
-if not st.session_state.logged_in:
+if not st.session_state['logged_in']:
     st.markdown("<h2 style='text-align: center;'>🛡️ ВХІД У СИСТЕМУ</h2>", unsafe_allow_html=True)
     role = st.radio("Режим:", ["Пілот", "Адміністратор"], horizontal=True)
-    with st.container(border=True):
+    with st.container():
         if role == "Пілот":
-            unit_index = UNITS.index(st.session_state.last_unit) if st.session_state.last_unit in UNITS else 0
+            unit_index = UNITS.index(st.session_state.get('last_unit', UNITS[0])) if st.session_state.get('last_unit') in UNITS else 0
             u = st.selectbox("Підрозділ:", UNITS, index=unit_index)
-            n = st.text_input("Звання та Прізвище:", value=st.session_state.last_name, placeholder="наприклад: ст.с-т Іваненко")
-            if st.session_state.last_name:
+            n = st.text_input(
+                "Звання та Прізвище:",
+                value=st.session_state.get('last_name', ''),
+                placeholder="наприклад: ст.с-т Іваненко"
+            )
+            if st.session_state.get('last_name'):
                 st.markdown("<p class='login-hint'>💡 Дані автоматично збережено з попереднього входу</p>", unsafe_allow_html=True)
-            remember = st.checkbox("Запам'ятати мої дані", value=st.session_state.remember_credentials)
+            remember = st.checkbox("Запам'ятати мої дані", value=st.session_state.get('remember_credentials', True))
             if st.button("УВІЙТИ") and n:
                 if remember:
-                    st.session_state.last_unit = u
-                    st.session_state.last_name = n
-                    st.session_state.remember_credentials = True
-                    # persist to Settings sheet
+                    st.session_state['last_unit'] = u
+                    st.session_state['last_name'] = n
+                    st.session_state['remember_credentials'] = True
                     try:
                         save_remembered_user(n, u)
                     except Exception:
                         pass
                 else:
-                    st.session_state.last_unit = UNITS[0]
-                    st.session_state.last_name = ""
-                    st.session_state.remember_credentials = False
-                st.session_state.logged_in = True
-                st.session_state.role = "Pilot"
-                st.session_state.user = {"unit": u, "name": n}
+                    st.session_state['last_unit'] = UNITS[0]
+                    st.session_state['last_name'] = ""
+                    st.session_state['remember_credentials'] = False
+                st.session_state['logged_in'] = True
+                st.session_state['role'] = "Pilot"
+                st.session_state['user'] = {"unit": u, "name": n}
                 df_d = load_data("Drafts")
                 if not df_d.empty and "Оператор" in df_d.columns:
                     my_d = df_d[df_d['Оператор'].astype(str).str.strip().str.lower() == n.strip().lower()]
                     if not my_d.empty:
-                        st.session_state.temp_flights.extend(my_d.to_dict('records'))
+                        st.session_state['temp_flights'].extend(my_d.to_dict('records'))
                 st.rerun()
         else:
             p = st.text_input("Пароль:", type="password")
             if st.button("ВХІД") and p == ADMIN_PASSWORD:
-                st.session_state.logged_in, st.session_state.role = True, "Admin"
+                st.session_state['logged_in'] = True
+                st.session_state['role'] = "Admin"
                 st.rerun()
 
 # --- 9. ОСНОВНИЙ ІНТЕРФЕЙС ---
 else:
     st.sidebar.markdown(f"👤 **{st.session_state.user['name'] if st.session_state.role=='Pilot' else 'Адмін'}**")
     if st.sidebar.button("Вийти"):
-        st.session_state.logged_in = False
-        st.session_state.splash_done = False
+        st.session_state['logged_in'] = False
+        st.session_state['splash_done'] = False
         st.rerun()
 
     tab_f, tab_app, tab_cus, tab_hist, tab_stat, tab_info = st.tabs(["🚀 Польоти", "📋 Заявка", "📡 ЦУС", "📜 Архів", "📊 Аналітика", "ℹ️ Довідка"])
@@ -395,25 +342,39 @@ else:
     # --- ВКЛАДКА ПОЛЬОТИ ---
     with tab_f:
         st.header("Внесення польотів")
-        
-        # Отримуємо дрони для поточного підрозділу
         available_drones = get_drones_for_unit(st.session_state.user['unit'])
         if not available_drones:
             st.warning(f"⚠️ У базі даних немає дронів для підрозділу '{st.session_state.user['unit']}'. Зверніться до адміністратора.")
             available_drones = ["Дрон не вказано"]
-        
-        with st.container(border=True):
+        with st.container():
             c1, c2, c3, c4 = st.columns(4)
             m_date = c1.date_input("Дата завдання", datetime.now(), key="m_date_val")
-            m_start = c2.time_input("Зміна з", d_time(8,0), key="m_start_val")
-            m_end = c3.time_input("Зміна до", d_time(20,0), key="m_end_val")
+            m_start = c2.time_input("Зміна з", d_time(8, 0), key="m_start_val")
+            m_end = c3.time_input("Зміна до", d_time(20, 0), key="m_end_val")
             m_route = c4.text_input("Маршрут", key="m_route_val", placeholder="Введіть маршрут")
             st.selectbox("🛡️ БпЛА НА ЗМІНУ:", available_drones, key="sel_drone_val")
-        
+        # --- Додати виліт ---
         with st.expander("➕ ДОДАТИ НОВИЙ ВИЛІТ", expanded=True):
             col1, col2, col3, col4 = st.columns(4)
-            t_off_str = col1.text_input("Взльот", value="", placeholder="09:00 або 0930", help="Можна 930 або 0930", key="t_off_input")
-            t_land_str = col2.text_input("Посадка", value="", placeholder="09:30", key="t_land_input")
+            # Відновлюємо значення з session_state або задаємо порожні
+            if 't_off_input' not in st.session_state:
+                st.session_state['t_off_input'] = ""
+            if 't_land_input' not in st.session_state:
+                st.session_state['t_land_input'] = ""
+
+            t_off_str = col1.text_input(
+                "Взльот",
+                value=st.session_state['t_off_input'],
+                placeholder="09:00 або 0930",
+                help="Можна 930 або 0930",
+                key="t_off_input"
+            )
+            t_land_str = col2.text_input(
+                "Посадка",
+                value=st.session_state['t_land_input'],
+                placeholder="09:30",
+                key="t_land_input"
+            )
             p_off, p_land = smart_time_parse(t_off_str), smart_time_parse(t_land_str)
             if p_off and p_land:
                 dur = calculate_duration(p_off, p_land)
@@ -427,10 +388,10 @@ else:
             f_res = st.selectbox("Результат", ["Без ознак порушення", "Затримання", "Виявлення цілі"], key="f_res")
             f_note = st.text_area("Примітки", value="", placeholder="Додаткова інформація (необов'язково)", key="f_note")
             f_imgs = st.file_uploader("📸 Скріншоти", accept_multiple_files=True, key=f"uploader_{st.session_state.uploader_key}")
-            
+
             if st.button("✅ ДОДАТИ У СПИСОК"):
                 if p_off and p_land:
-                    st.session_state.temp_flights.append({
+                    st.session_state['temp_flights'].append({
                         "Дата": st.session_state.m_date_val.strftime("%d.%m.%Y"),
                         "Час завдання": f"{st.session_state.m_start_val.strftime('%H:%M')} - {st.session_state.m_end_val.strftime('%H:%M')}",
                         "Підрозділ": st.session_state.user['unit'],
@@ -447,32 +408,38 @@ else:
                         "Примітки": f_note,
                         "files": f_imgs
                     })
-                    st.session_state.uploader_key += 1
+                    # Очищуємо поля форми
+                    st.session_state['t_off_input'] = ""
+                    st.session_state['t_land_input'] = ""
+                    st.session_state['f_dist'] = 0
+                    st.session_state['f_akb'] = ""
+                    st.session_state['f_cyc'] = 0
+                    st.session_state['f_res'] = "Без ознак порушення"
+                    st.session_state['f_note'] = ""
+                    st.session_state['uploader_key'] += 1
                     st.rerun()
                 else:
                     st.error("⚠️ Будь ласка, введіть коректний час взльоту та посадки")
-
-        if st.session_state.temp_flights:
-            df_t = pd.DataFrame(st.session_state.temp_flights)
+        # --- Відображення доданих польотів ---
+        if st.session_state['temp_flights']:
+            df_t = pd.DataFrame(st.session_state['temp_flights'])
             df_v = df_t[[c for c in ["Взльот", "Посадка", "Дистанція (м)", "Тривалість (хв)", "Номер АКБ", "Цикли АКБ"] if c in df_t.columns]]
-            df_v.columns = ["Зліт", "Посадка", "Відстань", "Хв", "№ АК��", "Цикли"][:len(df_v.columns)]
+            df_v.columns = ["Зліт", "Посадка", "Відстань", "Хв", "№ АКБ", "Цикли"][:len(df_v.columns)]
             st.dataframe(df_v, use_container_width=True)
             cb1, cb2, cb3 = st.columns(3)
             if cb1.button("🗑️ Видалити останній"):
-                st.session_state.temp_flights.pop()
+                st.session_state['temp_flights'].pop()
                 st.rerun()
             if cb2.button("💾 Зберегти в Хмару"):
                 df_d = load_data("Drafts")
-                # remove previous drafts for this operator
                 try:
-                    new_df = pd.DataFrame(st.session_state.temp_flights).drop(columns=['files'], errors='ignore')
-                    write_df_to_sheet("Drafts", new_df, remove_operator=st.session_state.user['name'])
+                    new_df = pd.DataFrame(st.session_state['temp_flights']).drop(columns=['files'], errors='ignore')
+                    write_df_to_sheet("Drafts", new_df, remove_operator=st.session_state['user']['name'])
                     st.success("💾 Збережено у чернетки (Drafts)!")
                 except Exception:
                     st.error("Не вдалося зберегти. Подивіться лог /tmp/gspread_api_error.json для деталей.")
             if cb3.button("🚀 ВІДПРАВИТИ ВСІ ДАНІ"):
-                all_fl = st.session_state.temp_flights
-                # Telegram send should not break the flow
+                all_fl = st.session_state['temp_flights']
                 try:
                     send_telegram_msg(all_fl)
                 except Exception:
@@ -489,39 +456,31 @@ else:
                 except Exception:
                     write_ok = False
                     st.error("Не вдалося записати у основну базу. Подивіться лог /tmp/gspread_api_error.json.")
-
                 if write_ok:
-                    # Очищуємо Drafts після успішної відправки
                     df_d = load_data("Drafts")
                     if not df_d.empty and "Оператор" in df_d.columns:
                         try:
-                            # remove this operator's drafts
-                            remaining = df_d[~(df_d['Оператор'].astype(str).str.strip().str.lower() == st.session_state.user['name'].strip().lower())]
+                            remaining = df_d[~(df_d['Оператор'].astype(str).str.strip().str.lower() == st.session_state['user']['name'].strip().lower())]
                             if not remaining.empty:
                                 safe_conn_update(conn, worksheet="Drafts", data=remaining)
                             else:
-                                # If no remaining drafts, clear the sheet
                                 safe_conn_update(conn, worksheet="Drafts", data=pd.DataFrame())
                         except Exception:
                             st.error("Не вдалося оновити Drafts після відправки. Перевірте лог.")
-
                     st.success("✅ Надіслано!")
-                    st.session_state.temp_flights = []
+                    st.session_state['temp_flights'] = []
                     st.rerun()
 
     # --- ВКЛАДКА ЗАЯВКА ---
     with tab_app:
         st.header("📝 Формування заявки")
-        
-        st.warning("⚠️ **УВАГА:** Даний розділ НЕ відправляє заявки автоматично на ЦУС! Він лише допомагає швидко сформувати текст заявки. Після формування скопіюйте текст та відправте його самостійно через месенджери.")
-        
-        available_drones = get_drones_for_unit(st.session_state.user['unit'])
+        st.warning("⚠️ **УВАГА:** Даний розділ НЕ відправляє заявки автоматично! Він лише допомагає швидко сформувати текст заявки. Після формування скопіюйте текст та відправте його самостійно через месенджери.")
+        available_drones = get_drones_for_unit(st.session_state['user']['unit'])
         if not available_drones:
-            st.warning(f"⚠️ У базі даних немає дронів для підрозділу '{st.session_state.user['unit']}'.")
+            st.warning(f"⚠️ У базі даних немає дронів для підрозділу '{st.session_state['user']['unit']}'.")
             available_drones = ["Дрон не вказано"]
-        
-        with st.container(border=True):
-            app_unit = st.selectbox("1. Заявник:", UNITS, index=UNITS.index(st.session_state.user['unit']) if st.session_state.user['unit'] in UNITS else 0)
+        with st.container():
+            app_unit = st.selectbox("1. Заявник:", UNITS, index=UNITS.index(st.session_state['user']['unit']) if st.session_state['user']['unit'] in UNITS else 0)
             app_drones = st.multiselect("2. Тип БпЛА:", available_drones, default=None)
             app_dates = st.date_input("3. Дата здійснення польоту:", value=(datetime.now(), datetime.now() + timedelta(days=1)))
             c_t1, c_t2 = st.columns(2)
@@ -532,14 +491,12 @@ else:
             a_h = c_h1.text_input("6. Висота (м):", "до 500 м")
             a_r = c_h2.text_input("7. Радіус (км):", "до 5 км")
             app_purp = st.selectbox("8. Мета:", ["патрулювання ділянки відповідальності", "за оперативною необхідністю", "навчально-тренувальні польоти"])
-            
             c_cont, c_phone = st.columns(2)
-            app_cont = c_cont.text_input("9. Контактна особа:", value=st.session_state.app_contact if st.session_state.app_contact else st.session_state.user['name'], placeholder="Прізвище Ім'я")
-            app_phone = c_phone.text_input("10. Номер телефону:", value=st.session_state.app_phone, placeholder="+380...")
-            
+            app_cont = c_cont.text_input("9. Контактна особа:", value=st.session_state['app_contact'] if st.session_state['app_contact'] else st.session_state['user']['name'], placeholder="Прізвище Ім'я")
+            app_phone = c_phone.text_input("10. Номер телефону:", value=st.session_state['app_phone'], placeholder="+380...")
         if st.button("✨ СФОРМУВАТИ ТЕКСТ ЗАЯВКИ"):
-            st.session_state.app_contact = app_cont
-            st.session_state.app_phone = app_phone
+            st.session_state['app_contact'] = app_cont
+            st.session_state['app_phone'] = app_phone
             d_str = ", ".join(app_drones) if app_drones else "не вказано"
             dt_r = f"з {app_dates[0].strftime('%d.%m.%Y')} по {app_dates[1].strftime('%d.%m.%Y')}" if isinstance(app_dates, tuple) and len(app_dates) == 2 else app_dates[0].strftime('%d.%m.%Y')
             contact_info = f"{app_cont}, тел: {app_phone}" if app_phone else app_cont
@@ -549,11 +506,11 @@ else:
     # --- ВКЛАДКА ЦУС ---
     with tab_cus:
         st.header("📡 Дані для ЦУС")
-        if not st.session_state.temp_flights:
+        if not st.session_state['temp_flights']:
             st.info("Додайте польоти.")
         else:
-            all_f = st.session_state.temp_flights
-            s_start = st.session_state.m_start_val
+            all_f = st.session_state['temp_flights']
+            s_start = st.session_state['m_start_val']
             b_m, a_m, cr = [], [], False
             for f in all_f:
                 fs = datetime.strptime(f['Взльот'], "%H:%M").time()
@@ -575,19 +532,16 @@ else:
         st.header("📜 Мій журнал")
         df_h = load_data("Sheet1")
         if not df_h.empty and "Оператор" in df_h.columns:
-            if st.session_state.role == "Pilot":
-                # case-insensitive match
-                mask = df_h['Оператор'].astype(str).str.strip().str.lower() == st.session_state.user['name'].strip().lower()
+            if st.session_state['role'] == "Pilot":
+                mask = df_h['Оператор'].astype(str).str.strip().str.lower() == st.session_state['user']['name'].strip().lower()
                 p_df = df_h[mask]
             else:
                 p_df = df_h
             if not p_df.empty:
-                # ensure date parsing for sorting; handle if 'Дата' missing
                 if 'Дата' in p_df.columns:
                     p_df['Дата_dt'] = pd.to_datetime(p_df['Дата'], format='%d.%m.%Y', errors='coerce')
                 else:
                     p_df['Дата_dt'] = pd.NaT
-                # sort by parsed date first, then fall back to original index
                 p_df = p_df.sort_values(by='Дата_dt', ascending=False, na_position='last')
                 cols = ["Дата", "Час завдання", "Підрозділ", "Оператор", "Дрон", "Маршрут", "Взльот", "Посадка", "Тривалість (хв)", "Дистанція (м)", "Результат", "Примітки", "Медіа (статус)", "Номер АКБ", "Цикли АКБ"]
                 available_cols = [c for c in cols if c in p_df.columns]
@@ -602,15 +556,14 @@ else:
         st.header("📊 Аналітика")
         df_s = load_data("Sheet1")
         if not df_s.empty and "Оператор" in df_s.columns and "Дата" in df_s.columns:
-            if st.session_state.role == "Pilot":
-                df_s = df_s[df_s['Оператор'].astype(str).str.strip().str.lower() == st.session_state.user['name'].strip().lower()]
+            if st.session_state['role'] == "Pilot":
+                df_s = df_s[df_s['Оператор'].astype(str).str.strip().str.lower() == st.session_state['user']['name'].strip().lower()]
             if not df_s.empty:
                 df_s['Дата_dt'] = pd.to_datetime(df_s['Дата'], format='%d.%m.%Y', errors='coerce')
                 df_s = df_s.dropna(subset=['Дата_dt'])
                 if not df_s.empty:
                     df_s['M_num'] = df_s['Дата_dt'].dt.month
                     df_s['Y_num'] = df_s['Дата_dt'].dt.year
-                    # make sure duration is numeric
                     if 'Тривалість (хв)' in df_s.columns:
                         df_s['Тривалість (хв)'] = pd.to_numeric(df_s['Тривалість (хв)'], errors='coerce').fillna(0)
                     else:
@@ -653,7 +606,7 @@ else:
 **3. 📋 Вкладка «Заявка»**
 * УВАГА: Розділ НЕ відправляє заявки автоматично!
 * Оберіть параметри польоту та натисніть «Сформувати текст заявки».
-* Скопіюйте текст та відправте самостійно через месенджери.
+* Скопіюйте текст та відправте його самостійно через месенджери.
 
 **4. 📡 Вкладка «ЦУС»**
 * Система сама розбиває польоти на вікна «До 00:00» та «Після 00:00».
