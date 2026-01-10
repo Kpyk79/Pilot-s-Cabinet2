@@ -490,4 +490,4 @@ else:
             st.markdown("""**Android (Chrome):** Три крапки (⋮) -> «Додати на головний екран».
 **iPhone (Safari):** Поділитися -> «Додати на початковий екран».""")
         st.write("---")
-        st.markdown("<div style='text-align: center; color: black;'>Слава Україні! 🇺🇦</div>", unsafe_allow_html=True)"
+        st.markdown("<div style='text-align: center; color: black;'>Слава Україні! 🇺🇦</div>", unsafe_allow_html=True)
