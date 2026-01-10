@@ -369,7 +369,9 @@ else:
             s_start = st.session_state.m_start_val
             b_m, a_m, cr = [], [], False
             for f in all_f:
-                fs = datetime.strptime(f['Зліт'], "%H:%M").time()
+                # Підтримка старих і нових записів
+                takeoff_key = "Зліт" if "Зліт" in f else "Взльот"
+                fs = datetime.strptime(f[takeoff_key], "%H:%M").time()
                 fe = datetime.strptime(f['Посадка'], "%H:%M").time()
                 if cr or fe < fs or fs < s_start:
                     cr = True
@@ -377,7 +379,11 @@ else:
                 else:
                     b_m.append(f)
             def fc(fls):
-                return "\n".join([f"{f['Зліт']} - {f['Посадка']} - {f['Дистанція (м)']} м ({f['Тривалість (хв)']} хв)" for f in fls])
+                result = []
+                for f in fls:
+                    takeoff_key = "Зліт" if "Зліт" in f else "Взльот"
+                    result.append(f"{f[takeoff_key]} - {f['Посадка']} - {f['Дистанція (м)']} м ({f['Тривалість (хв)']} хв)")
+                return "\n".join(result)
             st.subheader("🌙 До 00:00")
             st.code(fc(b_m), language="text")
             st.subheader("☀️ Після 00:00")
