@@ -80,18 +80,36 @@ def load_data(ws="Sheet1"):
 def get_drones_for_unit(unit):
     try:
         df = load_data("DronesDB")
-        if df.empty or "Підрозділ" not in df.columns: return []
+        if df.empty: return []
+        
+        # Перевіряємо наявність необхідних колонок
+        if "Підрозділ" not in df.columns:
+            return []
+        
+        # Фільтруємо дрони по підрозділу
         unit_drones = df[df['Підрозділ'] == unit]
-        if unit_drones.empty: return []
+        if unit_drones.empty: 
+            return []
+        
         drones_list = []
         for _, row in unit_drones.iterrows():
-            model = row.get('Модель', '')
-            sn = row.get('S/N', '')
-            if model:
-                display = f"{model} (S/N: {sn})" if sn else model
-                drones_list.append(display)
+            model = row.get('Модель БпЛА', '')
+            sn = row.get('s/n', '')
+            
+            if pd.isna(model) or model == '':
+                continue
+                
+            # Форматуємо назву з серійним номером якщо він є
+            if pd.notna(sn) and sn != '':
+                display = f"{model} (S/N: {sn})"
+            else:
+                display = model
+            
+            drones_list.append(display)
+        
         return drones_list if drones_list else []
-    except:
+    except Exception as e:
+        st.error(f"Помилка завантаження дронів: {e}")
         return []
 
 def send_telegram_msg(all_fl):
@@ -101,7 +119,9 @@ def send_telegram_msg(all_fl):
     # Формуємо детальний текст з усіма польотами
     flights_details = []
     for i, f in enumerate(all_fl):
-        flight_text = f"{i+1}. {f['Зліт']}-{f['Посадка']} ({f['Тривалість (хв)']} хв)"
+        # Підтримка старих і нових записів
+        takeoff_key = "Зліт" if "Зліт" in f else "Взльот"
+        flight_text = f"{i+1}. {f[takeoff_key]}-{f['Посадка']} ({f['Тривалість (хв)']} хв)"
         if f.get('Результат'):
             flight_text += f"\n   Результат: {f['Результат']}"
         if f.get('Примітки'):
