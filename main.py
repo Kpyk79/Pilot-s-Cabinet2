@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
@@ -14,10 +15,17 @@ from gspread.exceptions import APIError
 st.set_page_config(page_title="UAV Pilot Cabinet v7.2", layout="wide", page_icon="🛡️")
 
 def get_secret(key):
-    val = st.secrets.get(key)
-    if val: return val
-    try: return st.secrets["connections"]["gsheets"].get(key)
-    except: return None
+    val = None
+    try:
+        val = st.secrets.get(key)
+    except Exception:
+        pass
+    if val:
+        return val
+    try:
+        return st.secrets["connections"]["gsheets"].get(key)
+    except Exception:
+        return None
 
 TG_TOKEN = get_secret("TELEGRAM_BOT_TOKEN")
 TG_CHAT_ID = get_secret("TELEGRAM_CHAT_ID")
@@ -29,7 +37,7 @@ OUTPUT_ERROR_PATH = os.environ.get("GSPREAD_ERROR_PATH", "/tmp/gspread_api_error
 UNITS = [
     "впс Кодима", "віпс Шершенці", "віпс Загнітків", "впс Станіславка", 
     "віпс Тимкове", "віпс Чорна", "впс Окни", "віпс Ткаченкове", 
-    "віпс Гулянка", "віпс Новосеменівка", "впс Великокомарів��а", 
+    "віпс Гулянка", "віпс Новосеменівка", "впс Великокомарівка", 
     "віпс Павлівка", "впс Велика Михайлівка", "віпс Слов'яносербка", 
     "віпс Гребеники", "впс Степанівка", "впс Кучурган", 
     "віпс Лиманське", "віпс Лучинське", "УПЗ"
@@ -41,7 +49,7 @@ UKR_MONTHS = {1: "січень", 2: "лютий", 3: "березень", 4: "к�
 # --- 3. ДОПОМІЖНІ ФУНКЦІЇ ---
 def smart_time_parse(val):
     if not val: return None
-    val = "".join(filter(str.isdigit, val))
+    val = "".join(filter(str.isdigit, str(val)))
     if not val: return None
     try:
         if len(val) <= 2: h, m = int(val), 0
@@ -65,10 +73,6 @@ def format_to_time_str(total_minutes):
     except: return "00:00"
 
 def save_api_error(e: APIError, path: str = OUTPUT_ERROR_PATH):
-    """
-    Зберігає повну інформацію з e.response у файл path для діагностики.
-    Використовуйте цей файл для розбору помилок (не публікуйте private_key).
-    """
     try:
         resp = getattr(e, "response", None)
         status = getattr(resp, "status_code", None)
@@ -93,84 +97,170 @@ def save_api_error(e: APIError, path: str = OUTPUT_ERROR_PATH):
     try:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
-        # also print to logs
         print(f"gspread APIError saved to: {path}")
     except Exception as write_err:
         print(f"Failed to write API error file: {write_err}")
-        print("Short response:")
         print((text or "")[:2000])
 
+# normalize dataframe columns (strip whitespace and BOM)
+def normalize_df_columns(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+    cols = [str(c).strip().replace('\ufeff', '') for c in df.columns]
+    df = df.copy()
+    df.columns = cols
+    return df
+
+# safe conn update wrapper
 def safe_conn_update(conn, **kwargs):
-    """
-    Обгортка для conn.update(..) яка ловить APIError та зберігає повний dump в файл.
-    Параметри передаються напряму в conn.update, наприклад:
-    safe_conn_update(conn, worksheet='Drafts', data=df)
-    """
     try:
         return conn.update(**kwargs)
     except APIError as e:
-        # save full API response for offline analysis
         save_api_error(e)
-        # show user-friendly message in UI
         st.error("Помилка при збереженні у Google Sheets. Деталі збережені в " + OUTPUT_ERROR_PATH)
-        # optionally re-raise so caller sees exception too
         raise
     except Exception:
-        # non-API errors
         traceback.print_exc()
         st.error("Несподівана помилка при зверненні до Google Sheets. Перевірте логи.")
         raise
 
-# --- 4. РОБОТА З БАЗОЮ ТА TG ---
-conn = st.connection("gsheets", type=GSheetsConnection)
-
+# helper to load data and normalize columns + strip text fields
 def load_data(ws="Sheet1"):
     try:
         df = conn.read(worksheet=ws, ttl=0)
-        if df is None or df.empty: return pd.DataFrame()
+        if df is None or df.empty:
+            return pd.DataFrame()
+        df = normalize_df_columns(df)
+        # ensure string columns are stripped
+        for c in df.select_dtypes(include=[object]).columns:
+            df[c] = df[c].astype(str).str.strip()
         return df.dropna(how="all")
-    except: return pd.DataFrame()
+    except Exception:
+        traceback.print_exc()
+        return pd.DataFrame()
 
+# write dataframe to sheet, optionally remove existing rows for a given operator
+def write_df_to_sheet(worksheet_name: str, new_df: pd.DataFrame, remove_operator: str | None = None) -> None:
+    new_df = normalize_df_columns(new_df)
+    try:
+        existing = load_data(worksheet_name)
+    except Exception:
+        existing = pd.DataFrame()
+
+    if remove_operator and not new_df.empty and 'Оператор' in new_df.columns:
+        op = remove_operator.strip().lower()
+        if not existing.empty and 'Оператор' in existing.columns:
+            existing = existing[~(existing['Оператор'].astype(str).str.strip().str.lower() == op)]
+
+    if existing.empty:
+        out = new_df.reset_index(drop=True)
+    else:
+        # ensure same columns: take union
+        out = pd.concat([existing, new_df], ignore_index=True, sort=False).reset_index(drop=True)
+
+    # Safe update
+    safe_conn_update(conn, worksheet=worksheet_name, data=out)
+
+# remember user in Settings sheet for persistence between sessions
+def save_remembered_user(name: str, unit: str):
+    try:
+        df = pd.DataFrame([{"key": "last_user", "Оператор": name.strip(), "Підрозділ": unit.strip()}])
+        safe_conn_update(conn, worksheet="Settings", data=df)
+    except Exception:
+        traceback.print_exc()
+
+def load_remembered_user():
+    try:
+        df = load_data("Settings")
+        if not df.empty:
+            # try to find row with key last_user
+            if 'key' in df.columns:
+                row = df[df['key'] == 'last_user']
+                if not row.empty:
+                    return row.iloc[0].get('Оператор', ''), row.iloc[0].get('Підрозділ', UNITS[0])
+            # else take first row
+            row = df.iloc[0]
+            return row.get('Оператор', ''), row.get('Підрозділ', UNITS[0])
+    except Exception:
+        traceback.print_exc()
+    return '', UNITS[0]
+
+# robust drone lookup: accept different column names
 def get_drones_for_unit(unit):
     try:
         df = load_data("DronesDB")
-        if df.empty or "Підрозділ" not in df.columns: return []
-        unit_drones = df[df['Підрозділ'] == unit]
+        if df.empty: return []
+        # possible name variants
+        unit_col = None
+        for c in df.columns:
+            if c.lower().strip() in ['підрозділ', 'pidrozdil', 'unit', 'підрозділ:']:
+                unit_col = c
+                break
+        if unit_col is None and 'Підрозділ' in df.columns:
+            unit_col = 'Підрозділ'
+        if unit_col is None:
+            # try first column
+            unit_col = df.columns[0]
+
+        unit_drones = df[df[unit_col].astype(str).str.strip() == unit]
         if unit_drones.empty: return []
+
+        # possible model and sn columns
+        model_col = None
+        sn_col = None
+        for c in df.columns:
+            cl = c.lower()
+            if 'модел' in cl or 'модель' in cl or 'model' in cl:
+                model_col = c
+            if 's/n' in cl or cl == 'sn' or 's_n' in cl or 'serial' in cl:
+                sn_col = c
+        # fallback names
+        if model_col is None:
+            for alt in ['Модель БпЛА', 'Модель']:
+                if alt in df.columns:
+                    model_col = alt
+                    break
+        if sn_col is None:
+            for alt in ['S/N', 's/n', 'SN', 's_n', 'S N']:
+                if alt in df.columns:
+                    sn_col = alt
+                    break
+
         drones_list = []
         for _, row in unit_drones.iterrows():
-            model = row.get('Модель', '')
-            sn = row.get('S/N', '')
+            model = row.get(model_col, '') if model_col else ''
+            sn = row.get(sn_col, '') if sn_col else ''
+            if pd.isna(model): model = ''
+            if pd.isna(sn): sn = ''
+            model = str(model).strip()
+            sn = str(sn).strip()
             if model:
                 display = f"{model} (S/N: {sn})" if sn else model
                 drones_list.append(display)
-        return drones_list if drones_list else []
-    except:
+        return drones_list
+    except Exception:
+        traceback.print_exc()
         return []
+
+# --- 4. РОБОТА З БАЗОЮ ТА TG ---
+conn = st.connection("gsheets", type=GSheetsConnection)
 
 def send_telegram_msg(all_fl):
     if not TG_TOKEN or not TG_CHAT_ID: return
     first = all_fl[0]
-    
-    # Формуємо детальний текст з усіма польотами
     flights_details = []
     for i, f in enumerate(all_fl):
         flight_text = f"{i+1}. {f['Взльот']}-{f['Посадка']} ({f['Тривалість (хв)']} хв)\n   Результат: {f['Результат']}"
         if f.get('Примітки'):
             flight_text += f"\n   Примітки: {f['Примітки']}"
         flights_details.append(flight_text)
-    
     flights_txt = "\n".join(flights_details)
     report = f"🚁 **Донесення: {first['Підрозділ']}**\n👤 **Пілот:** {first['Оператор']}\n📅 **Дата:** {first['Дата']}\n⏰ **Час завдання:** {first['Час завдання']}\n🛡 **БпЛА:** {first['Дрон']}\n━━━━━━━━━━━━━━━\n🚀 **Вильоти:**\n{flights_txt}"
-    
-    # Збираємо всі фото в одну медіагрупу
     all_photos = []
     for fl in all_fl:
         if fl.get('files'):
             for img in fl['files']:
                 all_photos.append(img)
-    
-    # Відправляємо медіагрупу якщо є фото
     if all_photos:
         media_group = []
         for idx, img in enumerate(all_photos):
@@ -179,11 +269,10 @@ def send_telegram_msg(all_fl):
                 photo_data['caption'] = report
                 photo_data['parse_mode'] = 'Markdown'
             media_group.append(photo_data)
-        
-        files = {f'photo{idx}': (img.name, img.getvalue(), img.type) for idx, img in enumerate(all_photos)}
+        files = {f'photo{idx}': (getattr(img, 'name', f'photo{idx}.jpg'), img.getvalue(), getattr(img, 'type', 'image/jpeg')) for idx, img in enumerate(all_photos)}
         requests.post(
             f"https://api.telegram.org/bot{TG_TOKEN}/sendMediaGroup",
-            data={'chat_id': str(TG_CHAT_ID), 'media': str(media_group).replace("'", '"')},
+            data={'chat_id': str(TG_CHAT_ID), 'media': json.dumps(media_group)},
             files=files
         )
     else:
@@ -202,6 +291,16 @@ if 'last_name' not in st.session_state: st.session_state.last_name = ""
 if 'remember_credentials' not in st.session_state: st.session_state.remember_credentials = True
 if 'app_contact' not in st.session_state: st.session_state.app_contact = ""
 if 'app_phone' not in st.session_state: st.session_state.app_phone = ""
+
+# Load remembered user from Settings sheet (persisted across app restarts)
+try:
+    remembered_name, remembered_unit = load_remembered_user()
+    if remembered_name:
+        st.session_state.last_name = remembered_name
+    if remembered_unit:
+        st.session_state.last_unit = remembered_unit
+except Exception:
+    pass
 
 # --- 6. СТИЛІ ---
 st.markdown("""
@@ -245,6 +344,11 @@ if not st.session_state.logged_in:
                     st.session_state.last_unit = u
                     st.session_state.last_name = n
                     st.session_state.remember_credentials = True
+                    # persist to Settings sheet
+                    try:
+                        save_remembered_user(n, u)
+                    except Exception:
+                        pass
                 else:
                     st.session_state.last_unit = UNITS[0]
                     st.session_state.last_name = ""
@@ -254,8 +358,9 @@ if not st.session_state.logged_in:
                 st.session_state.user = {"unit": u, "name": n}
                 df_d = load_data("Drafts")
                 if not df_d.empty and "Оператор" in df_d.columns:
-                    my_d = df_d[df_d['Оператор'] == n].to_dict('records')
-                    st.session_state.temp_flights.extend(my_d)
+                    my_d = df_d[df_d['Оператор'].astype(str).str.strip().str.lower() == n.strip().lower()]
+                    if not my_d.empty:
+                        st.session_state.temp_flights.extend(my_d.to_dict('records'))
                 st.rerun()
         else:
             p = st.text_input("Пароль:", type="password")
@@ -335,8 +440,8 @@ else:
 
         if st.session_state.temp_flights:
             df_t = pd.DataFrame(st.session_state.temp_flights)
-            df_v = df_t[["Взльот", "Посадка", "Дистанція (м)", "Тривалість (хв)", "Номер АКБ", "Цикли АКБ"]]
-            df_v.columns = ["Зліт", "Посадка", "Відстань", "Хв", "№ АКБ", "Цикли"]
+            df_v = df_t[[c for c in ["Взльот", "Посадка", "Дистанція (м)", "Тривалість (хв)", "Номер АКБ", "Цикли АКБ"] if c in df_t.columns]]
+            df_v.columns = ["Зліт", "Посадка", "Відстань", "Хв", "№ АКБ", "Цикли"][:len(df_v.columns)]
             st.dataframe(df_v, use_container_width=True)
             cb1, cb2, cb3 = st.columns(3)
             if cb1.button("🗑️ Видалити останній"):
@@ -344,14 +449,13 @@ else:
                 st.rerun()
             if cb2.button("💾 Зберегти в Хмару"):
                 df_d = load_data("Drafts")
-                df_d = df_d[df_d['Оператор'] != st.session_state.user['name']] if not df_d.empty and "Оператор" in df_d.columns else df_d
-                # Виконуємо оновлення через обгортку safe_conn_update
+                # remove previous drafts for this operator
                 try:
-                    safe_conn_update(conn, worksheet="Drafts", data=pd.concat([df_d, pd.DataFrame(st.session_state.temp_flights).drop(columns=['files'], errors='ignore')], ignore_index=True))
-                    st.success("💾 Збережено!")
+                    new_df = pd.DataFrame(st.session_state.temp_flights).drop(columns=['files'], errors='ignore')
+                    write_df_to_sheet("Drafts", new_df, remove_operator=st.session_state.user['name'])
+                    st.success("💾 Збережено у чернетки (Drafts)!")
                 except Exception:
-                    # деталі помилки вже збережено у OUTPUT_ERROR_PATH
-                    st.error("Не вдалося зберегти. Подивіться лог /tmp/gspread_api_error.json для деталей.")
+                    st.error("Не вдалося зберегти. Подивіться лог /tmp/gspread_api_error.json для детал��й.")
             if cb3.button("🚀 ВІДПРАВИТИ ВСІ ДАНІ"):
                 all_fl = st.session_state.temp_flights
                 send_telegram_msg(all_fl)
@@ -362,24 +466,23 @@ else:
                     row["Медіа (статус)"] = "З фото" if f.get('files') else "Текст"
                     final_to_db.append(row)
                 db_m = load_data("Sheet1")
-                # оновлюємо основну базу
                 try:
-                    safe_conn_update(conn, worksheet="Sheet1", data=pd.concat([db_m, pd.DataFrame(final_to_db)], ignore_index=True))
+                    write_df_to_sheet("Sheet1", pd.DataFrame(final_to_db))
                 except Exception:
                     st.error("Не вдалося записати у основну базу. Подивіться лог /tmp/gspread_api_error.json.")
-                    # не продовжуємо очищення чернеток якщо не вдалось записати
                     raise
 
                 # Очищуємо Drafts після успішної відправки
                 df_d = load_data("Drafts")
                 if not df_d.empty and "Оператор" in df_d.columns:
-                    df_d = df_d[df_d['Оператор'] != st.session_state.user['name']]
                     try:
-                        safe_conn_update(conn, worksheet="Drafts", data=df_d)
+                        # remove this operator's drafts
+                        remaining = df_d[~(df_d['Оператор'].astype(str).str.strip().str.lower() == st.session_state.user['name'].strip().lower())]
+                        safe_conn_update(conn, worksheet="Drafts", data=remaining)
                     except Exception:
                         st.error("Не вдалося оновити Drafts після відправки. Перевірте лог.")
                         raise
-                
+
                 st.success("✅ Надіслано!")
                 st.session_state.temp_flights = []
                 st.rerun()
@@ -390,7 +493,6 @@ else:
         
         st.warning("⚠️ **УВАГА:** Даний розділ НЕ відправляє заявки автоматично на ЦУС! Він лише допомагає швидко сформувати текст заявки. Після формування скопіюйте текст та відправте його самостійно через месенджери.")
         
-        # Отримуємо дрони для поточного підрозділу
         available_drones = get_drones_for_unit(st.session_state.user['unit'])
         if not available_drones:
             st.warning(f"⚠️ У базі даних немає дронів для підрозділу '{st.session_state.user['unit']}'.")
@@ -403,7 +505,7 @@ else:
             c_t1, c_t2 = st.columns(2)
             a_t1 = c_t1.time_input("4. Час роботи з:", d_time(8,0))
             a_t2 = c_t2.time_input("до:", d_time(20,0))
-            app_route = st.text_area("5. Населений пункт (м��ршрут):")
+            app_route = st.text_area("5. Населений пункт (маршрут):")
             c_h1, c_h2 = st.columns(2)
             a_h = c_h1.text_input("6. Висота (м):", "до 500 м")
             a_r = c_h2.text_input("7. Радіус (км):", "до 5 км")
@@ -414,10 +516,8 @@ else:
             app_phone = c_phone.text_input("10. Номер телефону:", value=st.session_state.app_phone, placeholder="+380...")
             
         if st.button("✨ СФОРМУВАТИ ТЕКСТ ЗАЯВКИ"):
-            # Зберігаємо введені контактні дані
             st.session_state.app_contact = app_cont
             st.session_state.app_phone = app_phone
-            
             d_str = ", ".join(app_drones) if app_drones else "не вказано"
             dt_r = f"з {app_dates[0].strftime('%d.%m.%Y')} по {app_dates[1].strftime('%d.%m.%Y')}" if isinstance(app_dates, tuple) and len(app_dates) == 2 else app_dates[0].strftime('%d.%m.%Y')
             contact_info = f"{app_cont}, тел: {app_phone}" if app_phone else app_cont
@@ -442,7 +542,7 @@ else:
                 else:
                     b_m.append(f)
             def fc(fls):
-                return "\n".join([f"{f['Взльот']} - {f['Посадка']} - {f['Дистанція (м)']} м ({f['Тривалість (хв)']} хв)" for f in fls])
+                return "\n".join([f"{f['Взльот']} - {f['Посадка']} - {f.get('Дистанція (м)', 0)} м ({f['Тривалість (хв)']} хв)" for f in fls])
             st.subheader("🌙 До 00:00")
             st.code(fc(b_m), language="text")
             st.subheader("☀️ Після 00:00")
@@ -453,12 +553,20 @@ else:
         st.header("📜 Мій журнал")
         df_h = load_data("Sheet1")
         if not df_h.empty and "Оператор" in df_h.columns:
-            p_df = df_h[df_h['Оператор'] == st.session_state.user['name']] if st.session_state.role == "Pilot" else df_h
-            if not p_df.empty:
-                cols = ["Дата", "Час завдання", "Підрозділ", "Оператор", "Дрон", "Маршрут", "Взльот", "Посадка", "Тривалість (хв)", "Дистанція (м)", "Результат", "Примітки", "Медіа (статус)", "Номер АКБ", "Цикли АКБ"]
-                st.dataframe(p_df[[c for c in cols if c in p_df.columns]].sort_values(by="Дата", ascending=False), use_container_width=True)
+            if st.session_state.role == "Pilot":
+                # case-insensitive match
+                mask = df_h['Оператор'].astype(str).str.strip().str.lower() == st.session_state.user['name'].strip().lower()
+                p_df = df_h[mask]
             else:
-                st.info("Архів порожній.")
+                p_df = df_h
+            if not p_df.empty:
+                # ensure date parsing for sorting
+                p_df['Дата_dt'] = pd.to_datetime(p_df['Дата'], format='%d.%m.%Y', errors='coerce')
+                cols = ["Дата", "Час завдання", "Підрозділ", "Оператор", "Дрон", "Маршрут", "Взльот", "Посадка", "Тривалість (хв)", "Дистанція (м)", "Результат", "Примітки", "Медіа (статус)", "Номер АКБ", "Цикли АКБ"]
+                available_cols = [c for c in cols if c in p_df.columns]
+                st.dataframe(p_df[available_cols].sort_values(by='Дата_dt', ascending=False).drop(columns=['Дата_dt'], errors='ignore'), use_container_width=True)
+            else:
+                st.info("Архів порожній для цього оператора.")
         else:
             st.info("База даних ще не містить записів.")
 
@@ -468,13 +576,18 @@ else:
         df_s = load_data("Sheet1")
         if not df_s.empty and "Оператор" in df_s.columns and "Дата" in df_s.columns:
             if st.session_state.role == "Pilot":
-                df_s = df_s[df_s['Оператор'] == st.session_state.user['name']]
+                df_s = df_s[df_s['Оператор'].astype(str).str.strip().str.lower() == st.session_state.user['name'].strip().lower()]
             if not df_s.empty:
                 df_s['Дата_dt'] = pd.to_datetime(df_s['Дата'], format='%d.%m.%Y', errors='coerce')
                 df_s = df_s.dropna(subset=['Дата_dt'])
                 if not df_s.empty:
                     df_s['M_num'] = df_s['Дата_dt'].dt.month
                     df_s['Y_num'] = df_s['Дата_dt'].dt.year
+                    # make sure duration is numeric
+                    if 'Тривалість (хв)' in df_s.columns:
+                        df_s['Тривалість (хв)'] = pd.to_numeric(df_s['Тривалість (хв)'], errors='coerce').fillna(0)
+                    else:
+                        df_s['Тривалість (хв)'] = 0
                     rs = df_s.groupby(['Y_num', 'M_num']).agg(
                         Польоти=('Дата', 'count'),
                         Затримання=('Результат', lambda x: (x == "Затримання").sum()),
