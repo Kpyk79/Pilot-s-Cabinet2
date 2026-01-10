@@ -181,7 +181,8 @@ if 'uploader_key' not in st.session_state: st.session_state.uploader_key = 0
 if 'saved_credentials' not in st.session_state: st.session_state.saved_credentials = {"unit": UNITS[0], "name": ""}
 if 'app_contact' not in st.session_state: st.session_state.app_contact = ""
 if 'app_phone' not in st.session_state: st.session_state.app_phone = ""
-if 'clear_flight_form' not in st.session_state: st.session_state.clear_flight_form = False
+if 'session_drone' not in st.session_state: st.session_state.session_drone = None
+if 'flight_form_counter' not in st.session_state: st.session_state.flight_form_counter = 0
 
 # --- 7. СТИЛІ ---
 st.markdown("""
@@ -273,19 +274,26 @@ else:
             m_start = c2.time_input("Зміна з", d_time(8,0), key="m_start_val")
             m_end = c3.time_input("Зміна до", d_time(20,0), key="m_end_val")
             m_route = c4.text_input("Маршрут", key="m_route_val", placeholder="Введіть маршрут")
-            selected_drone = st.selectbox("🛡️ БпЛА НА ЗМІНУ:", available_drones, key="sel_drone_val")
-        
-        # Очищення форми після додавання
-        if st.session_state.clear_flight_form:
-            st.session_state.clear_flight_form = False
-            st.rerun()
+            
+            # Визначаємо індекс для вибраного дрона
+            drone_index = 0
+            if st.session_state.session_drone and st.session_state.session_drone in available_drones:
+                drone_index = available_drones.index(st.session_state.session_drone)
+            
+            selected_drone = st.selectbox("🛡️ БпЛА НА ЗМІНУ:", available_drones, index=drone_index, key="sel_drone_val")
+            
+            # Зберігаємо вибраний дрон на весь сеанс
+            if selected_drone:
+                st.session_state.session_drone = selected_drone
         
         with st.expander("➕ ДОДАТИ НОВИЙ ВИЛІТ", expanded=True):
             col1, col2, col3, col4 = st.columns(4)
             
-            # Використовуємо порожні значення за замовчуванням
-            t_off_str = col1.text_input("Зліт", value="", placeholder="09:00 або 0930", help="Можна 930 або 0930", key="t_off_input")
-            t_land_str = col2.text_input("Посадка", value="", placeholder="09:30", key="t_land_input")
+            # Використовуємо лічильник для скидання форми
+            form_key = st.session_state.flight_form_counter
+            
+            t_off_str = col1.text_input("Зліт", value="", placeholder="09:00 або 0930", help="Можна 930 або 0930", key=f"t_off_input_{form_key}")
+            t_land_str = col2.text_input("Посадка", value="", placeholder="09:30", key=f"t_land_input_{form_key}")
             
             p_off, p_land = smart_time_parse(t_off_str), smart_time_parse(t_land_str)
             if p_off and p_land:
@@ -294,13 +302,13 @@ else:
             else:
                 col3.info("⏳ Час?")
             
-            f_dist = col4.number_input("Відстань (м)", min_value=0, value=0, key="f_dist", help="Відстань польоту в метрах")
+            f_dist = col4.number_input("Відстань (м)", min_value=0, value=0, key=f"f_dist_{form_key}", help="Відстань польоту в метрах")
             
             cb1, cb2 = st.columns(2)
-            f_akb = cb1.text_input("Номер АКБ", value="", placeholder="Введіть номер", key="f_akb")
-            f_cyc = cb2.number_input("Цикли АКБ", min_value=0, value=0, key="f_cyc")
-            f_res = st.selectbox("Результат", ["Без ознак порушення", "Затримання", "Виявлення цілі"], key="f_res")
-            f_note = st.text_area("Примітки", value="", placeholder="Додаткова інформація (необов'язково)", key="f_note")
+            f_akb = cb1.text_input("Номер АКБ", value="", placeholder="Введіть номер", key=f"f_akb_{form_key}")
+            f_cyc = cb2.number_input("Цикли АКБ", min_value=0, value=0, key=f"f_cyc_{form_key}")
+            f_res = st.selectbox("Результат", ["Без ознак порушення", "Затримання", "Виявлення цілі"], key=f"f_res_{form_key}")
+            f_note = st.text_area("Примітки", value="", placeholder="Додаткова інформація (необов'язково)", key=f"f_note_{form_key}")
             f_imgs = st.file_uploader("📸 Скріншоти", accept_multiple_files=True, key=f"uploader_{st.session_state.uploader_key}")
             
             if st.button("✅ ДОДАТИ У СПИСОК"):
@@ -310,7 +318,7 @@ else:
                         "Час завдання": f"{st.session_state.m_start_val.strftime('%H:%M')} - {st.session_state.m_end_val.strftime('%H:%M')}",
                         "Підрозділ": st.session_state.user['unit'],
                         "Оператор": st.session_state.user['name'],
-                        "Дрон": selected_drone,
+                        "Дрон": st.session_state.session_drone,
                         "Маршрут": st.session_state.m_route_val,
                         "Зліт": p_off.strftime("%H:%M"),
                         "Посадка": p_land.strftime("%H:%M"),
@@ -322,9 +330,9 @@ else:
                         "Примітки": f_note,
                         "files": f_imgs
                     })
-                    # Збільшуємо ключ для uploader та очищуємо форму
+                    # Збільшуємо лічильник для очищення форми
+                    st.session_state.flight_form_counter += 1
                     st.session_state.uploader_key += 1
-                    st.session_state.clear_flight_form = True
                     st.rerun()
                 else:
                     st.error("⚠️ Будь ласка, введіть коректний час зльоту та посадки")
@@ -375,8 +383,10 @@ else:
                     df_d = df_d[df_d['Оператор'] != st.session_state.user['name']]
                     conn.update(worksheet="Drafts", data=df_d)
                 
-                st.success("✅ Надіслано!")
+                # Очищуємо сесійний дрон після відправки
+                st.session_state.session_drone = None
                 st.session_state.temp_flights = []
+                st.success("✅ Надіслано!")
                 st.rerun()
 
     # --- ВКЛАДКА ЦУС ---
