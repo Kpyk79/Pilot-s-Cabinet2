@@ -26,13 +26,13 @@ UNITS = [
     "віпс Гребеники", "впс Степанівка", "впс Кучурган", 
     "віпс Лиманське", "віпс Лучинське", "УПЗ"
 ]
-DRONES = ["DJI Mavic 3 Pro", "DJI Mavic 3E", "DJI Mavic 3T", "DJI Matrice 30T", "DJI Matrice 300", "Autel Evo Max 4T", "Skydio X2D", "Puma LE"]
 ADMIN_PASSWORD = "admin_secret"
 
 UKR_MONTHS = {1: "січень", 2: "лютий", 3: "березень", 4: "квітень", 5: "травень", 6: "червень", 7: "липень", 8: "серпень", 9: "вересень", 10: "жовтень", 11: "листопад", 12: "грудень"}
 
 # --- 3. ДОПОМІЖНІ ФУНКЦІЇ ---
 def smart_time_parse(val):
+    if not val: return None
     val = "".join(filter(str.isdigit, val))
     if not val: return None
     try:
@@ -66,17 +66,66 @@ def load_data(ws="Sheet1"):
         return df.dropna(how="all")
     except: return pd.DataFrame()
 
+def get_drones_for_unit(unit):
+    try:
+        df = load_data("DronesDB")
+        if df.empty or "Підрозділ" not in df.columns: return []
+        unit_drones = df[df['Підрозділ'] == unit]
+        if unit_drones.empty: return []
+        drones_list = []
+        for _, row in unit_drones.iterrows():
+            model = row.get('Модель', '')
+            sn = row.get('S/N', '')
+            if model:
+                display = f"{model} (S/N: {sn})" if sn else model
+                drones_list.append(display)
+        return drones_list if drones_list else []
+    except:
+        return []
+
 def send_telegram_msg(all_fl):
     if not TG_TOKEN or not TG_CHAT_ID: return
     first = all_fl[0]
-    flights_txt = "\n".join([f"{i+1}. {f['Взльот']}-{f['Посадка']} ({f['Тривалість (хв)']} хв)" for i, f in enumerate(all_fl)])
-    report = f"🚁 **Донесення: {first['Підрозділ']}**\n👤 **Пілот:** {first['Оператор']}\n📅 **Дата:** {first['Дата']}\n🛡 **БпЛА:** {first['Дрон']}\n━━━━━━━━━━━━━━━\n🚀 **Вильоти:**\n{flights_txt}"
+    
+    # Формуємо детальний текст з усіма польотами
+    flights_details = []
+    for i, f in enumerate(all_fl):
+        flight_text = f"{i+1}. {f['Взльот']}-{f['Посадка']} ({f['Тривалість (хв)']} хв)\n   Результат: {f['Результат']}"
+        if f.get('Примітки'):
+            flight_text += f"\n   Примітки: {f['Примітки']}"
+        flights_details.append(flight_text)
+    
+    flights_txt = "\n".join(flights_details)
+    report = f"🚁 **Донесення: {first['Підрозділ']}**\n👤 **Пілот:** {first['Оператор']}\n📅 **Дата:** {first['Дата']}\n⏰ **Час завдання:** {first['Час завдання']}\n🛡 **БпЛА:** {first['Дрон']}\n━━━━━━━━━━━━━━━\n🚀 **Вильоти:**\n{flights_txt}"
+    
+    # Збираємо всі фото в одну медіагрупу
+    all_photos = []
     for fl in all_fl:
         if fl.get('files'):
             for img in fl['files']:
-                requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto", files={'photo': (img.name, img.getvalue(), img.type)}, data={'chat_id': str(TG_CHAT_ID), 'caption': report, 'parse_mode': 'Markdown'})
-    if not any(f.get('files') for f in all_fl):
-        requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage", data={'chat_id': str(TG_CHAT_ID), 'text': report, 'parse_mode': 'Markdown'})
+                all_photos.append(img)
+    
+    # Відправляємо медіагрупу якщо є фото
+    if all_photos:
+        media_group = []
+        for idx, img in enumerate(all_photos):
+            photo_data = {'type': 'photo', 'media': f'attach://photo{idx}'}
+            if idx == 0:
+                photo_data['caption'] = report
+                photo_data['parse_mode'] = 'Markdown'
+            media_group.append(photo_data)
+        
+        files = {f'photo{idx}': (img.name, img.getvalue(), img.type) for idx, img in enumerate(all_photos)}
+        requests.post(
+            f"https://api.telegram.org/bot{TG_TOKEN}/sendMediaGroup",
+            data={'chat_id': str(TG_CHAT_ID), 'media': str(media_group).replace("'", '"')},
+            files=files
+        )
+    else:
+        requests.post(
+            f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
+            data={'chat_id': str(TG_CHAT_ID), 'text': report, 'parse_mode': 'Markdown'}
+        )
 
 # --- 5. ІНІЦІАЛІЗАЦІЯ СТАНУ ---
 if 'temp_flights' not in st.session_state: st.session_state.temp_flights = []
@@ -86,6 +135,8 @@ if 'uploader_key' not in st.session_state: st.session_state.uploader_key = 0
 if 'last_unit' not in st.session_state: st.session_state.last_unit = UNITS[0]
 if 'last_name' not in st.session_state: st.session_state.last_name = ""
 if 'remember_credentials' not in st.session_state: st.session_state.remember_credentials = True
+if 'app_contact' not in st.session_state: st.session_state.app_contact = ""
+if 'app_phone' not in st.session_state: st.session_state.app_phone = ""
 
 # --- 6. СТИЛІ ---
 st.markdown("""
@@ -155,57 +206,44 @@ else:
         st.session_state.splash_done = False
         st.rerun()
 
-    tab_app, tab_f, tab_cus, tab_hist, tab_stat, tab_info = st.tabs(["📋 Заявка", "🚀 Польоти", "📡 ЦУС", "📜 Архів", "📊 Аналітика", "ℹ️ Довідка"])
+    tab_f, tab_app, tab_cus, tab_hist, tab_stat, tab_info = st.tabs(["🚀 Польоти", "📋 Заявка", "📡 ЦУС", "📜 Архів", "📊 Аналітика", "ℹ️ Довідка"])
 
-    with tab_app:
-        st.header("📝 Формування заявки")
-        with st.container(border=True):
-            app_unit = st.selectbox("1. Заявник:", UNITS, index=UNITS.index(st.session_state.user['unit']) if st.session_state.user['unit'] in UNITS else 0)
-            c_dr = st.session_state.get('sel_drone_val', DRONES[0])
-            app_drones = st.multiselect("2. Тип БпЛА:", DRONES, default=[c_dr] if c_dr in DRONES else None)
-            app_sn = st.text_input("s/n:", placeholder="s/n: 123, 456")
-            app_dates = st.date_input("3. Дата здійснення польоту:", value=(datetime.now(), datetime.now() + timedelta(days=1)))
-            c_t1, c_t2 = st.columns(2)
-            a_t1 = c_t1.time_input("4. Час роботи з:", d_time(8,0))
-            a_t2 = c_t2.time_input("до:", d_time(20,0))
-            app_route = st.text_area("5. Населений пункт (маршрут):")
-            c_h1, c_h2 = st.columns(2)
-            a_h = c_h1.text_input("6. Висота (м):", "до 500 м")
-            a_r = c_h2.text_input("7. Радіус (км):", "до 5 км")
-            app_purp = st.selectbox("8. Мета:", ["патрулювання ділянки відповідальності", "за оперативною необхідністю", "навчально-тренувальні польоти"])
-            app_cont = st.text_input("9. Контактна особа:", f"{st.session_state.user['name']}, тел: ")
-        if st.button("✨ СФОРМУВАТИ ТЕКСТ ЗАЯВКИ"):
-            d_str = ", ".join(app_drones) + (f" ({app_sn})" if app_sn else "")
-            dt_r = f"з {app_dates[0].strftime('%d.%m.%Y')} по {app_dates[1].strftime('%d.%m.%Y')}" if isinstance(app_dates, tuple) and len(app_dates) == 2 else app_dates[0].strftime('%d.%m.%Y')
-            f_txt = f"ЗАЯВКА НА ПОЛІТ\n1. Заявник: в/ч 2196 ({app_unit})\n2. Тип БпЛА: {d_str}\n3. Дата здійснення польоту: {dt_r}\n4. Час роботи: з {a_t1.strftime('%H:%M')} по {a_t2.strftime('%H:%M')}\n5. Населений пункт (маршрут): {app_route}\n6. Висота роботи (м): {a_h}\n7. Радіус роботи (км): {a_r}\n8. Мета польоту: {app_purp}\n9. Контактна особа: {app_cont}"
-            st.code(f_txt, language="text")
-
+    # --- ВКЛАДКА ПОЛЬОТИ ---
     with tab_f:
         st.header("Внесення польотів")
+        
+        # Отримуємо дрони для поточного підрозділу
+        available_drones = get_drones_for_unit(st.session_state.user['unit'])
+        if not available_drones:
+            st.warning(f"⚠️ У базі даних немає дронів для підрозділу '{st.session_state.user['unit']}'. Зверніться до адміністратора.")
+            available_drones = ["Дрон не вказано"]
+        
         with st.container(border=True):
             c1, c2, c3, c4 = st.columns(4)
             m_date = c1.date_input("Дата завдання", datetime.now(), key="m_date_val")
             m_start = c2.time_input("Зміна з", d_time(8,0), key="m_start_val")
             m_end = c3.time_input("Зміна до", d_time(20,0), key="m_end_val")
-            m_route = c4.text_input("Маршрут", key="m_route_val")
-            st.selectbox("🛡️ БпЛА НА ЗМІНУ:", DRONES, key="sel_drone_val")
+            m_route = c4.text_input("Маршрут", key="m_route_val", placeholder="Введіть маршрут")
+            st.selectbox("🛡️ БпЛА НА ЗМІНУ:", available_drones, key="sel_drone_val")
+        
         with st.expander("➕ ДОДАТИ НОВИЙ ВИЛІТ", expanded=True):
             col1, col2, col3, col4 = st.columns(4)
-            t_off_str = col1.text_input("Взльот", value="09:00", help="Можна 930 або 0930")
-            t_land_str = col2.text_input("Посадка", value="09:30")
+            t_off_str = col1.text_input("Взльот", value="", placeholder="09:00 або 0930", help="Можна 930 або 0930", key="t_off_input")
+            t_land_str = col2.text_input("Посадка", value="", placeholder="09:30", key="t_land_input")
             p_off, p_land = smart_time_parse(t_off_str), smart_time_parse(t_land_str)
             if p_off and p_land:
                 dur = calculate_duration(p_off, p_land)
                 col3.markdown(f"<div class='duration-box'>⏳ <b>{dur} хв</b></div>", unsafe_allow_html=True)
             else:
-                col3.warning("Час?")
-            f_dist = col4.number_input("Відстань (м)", min_value=0, key="f_dist")
+                col3.info("⏳ Час?")
+            f_dist = col4.number_input("Відстань (м)", min_value=0, value=0, key="f_dist", help="Відстань польоту в метрах")
             cb1, cb2 = st.columns(2)
-            f_akb = cb1.text_input("Номер АКБ", key="f_akb")
-            f_cyc = cb2.number_input("Цикли АКБ", min_value=0, key="f_cyc")
+            f_akb = cb1.text_input("Номер АКБ", value="", placeholder="Введіть номер", key="f_akb")
+            f_cyc = cb2.number_input("Цикли АКБ", min_value=0, value=0, key="f_cyc")
             f_res = st.selectbox("Результат", ["Без ознак порушення", "Затримання", "Виявлення цілі"], key="f_res")
-            f_note = st.text_area("Примітки", key="f_note")
+            f_note = st.text_area("Примітки", value="", placeholder="Додаткова інформація (необов'язково)", key="f_note")
             f_imgs = st.file_uploader("📸 Скріншоти", accept_multiple_files=True, key=f"uploader_{st.session_state.uploader_key}")
+            
             if st.button("✅ ДОДАТИ У СПИСОК"):
                 if p_off and p_land:
                     st.session_state.temp_flights.append({
@@ -223,10 +261,12 @@ else:
                         "Цикли АКБ": st.session_state.f_cyc,
                         "Результат": f_res,
                         "Примітки": f_note,
-                        "files": st.session_state[f"uploader_{st.session_state.uploader_key}"]
+                        "files": f_imgs
                     })
                     st.session_state.uploader_key += 1
                     st.rerun()
+                else:
+                    st.error("⚠️ Будь ласка, введіть коректний час взльоту та посадки")
 
         if st.session_state.temp_flights:
             df_t = pd.DataFrame(st.session_state.temp_flights)
@@ -253,10 +293,58 @@ else:
                     final_to_db.append(row)
                 db_m = load_data("Sheet1")
                 conn.update(worksheet="Sheet1", data=pd.concat([db_m, pd.DataFrame(final_to_db)], ignore_index=True))
+                
+                # Очищуємо Drafts після успішної відправки
+                df_d = load_data("Drafts")
+                if not df_d.empty and "Оператор" in df_d.columns:
+                    df_d = df_d[df_d['Оператор'] != st.session_state.user['name']]
+                    conn.update(worksheet="Drafts", data=df_d)
+                
                 st.success("✅ Надіслано!")
                 st.session_state.temp_flights = []
                 st.rerun()
 
+    # --- ВКЛАДКА ЗАЯВКА ---
+    with tab_app:
+        st.header("📝 Формування заявки")
+        
+        st.warning("⚠️ **УВАГА:** Даний розділ НЕ відправляє заявки автоматично на ЦУС! Він лише допомагає швидко сформувати текст заявки. Після формування скопіюйте текст та відправте його самостійно через месенджери.")
+        
+        # Отримуємо дрони для поточного підрозділу
+        available_drones = get_drones_for_unit(st.session_state.user['unit'])
+        if not available_drones:
+            st.warning(f"⚠️ У базі даних немає дронів для підрозділу '{st.session_state.user['unit']}'.")
+            available_drones = ["Дрон не вказано"]
+        
+        with st.container(border=True):
+            app_unit = st.selectbox("1. Заявник:", UNITS, index=UNITS.index(st.session_state.user['unit']) if st.session_state.user['unit'] in UNITS else 0)
+            app_drones = st.multiselect("2. Тип БпЛА:", available_drones, default=None)
+            app_dates = st.date_input("3. Дата здійснення польоту:", value=(datetime.now(), datetime.now() + timedelta(days=1)))
+            c_t1, c_t2 = st.columns(2)
+            a_t1 = c_t1.time_input("4. Час роботи з:", d_time(8,0))
+            a_t2 = c_t2.time_input("до:", d_time(20,0))
+            app_route = st.text_area("5. Населений пункт (маршрут):")
+            c_h1, c_h2 = st.columns(2)
+            a_h = c_h1.text_input("6. Висота (м):", "до 500 м")
+            a_r = c_h2.text_input("7. Радіус (км):", "до 5 км")
+            app_purp = st.selectbox("8. Мета:", ["патрулювання ділянки відповідальності", "за оперативною необхідністю", "навчально-тренувальні польоти"])
+            
+            c_cont, c_phone = st.columns(2)
+            app_cont = c_cont.text_input("9. Контактна особа:", value=st.session_state.app_contact if st.session_state.app_contact else st.session_state.user['name'], placeholder="Прізвище Ім'я")
+            app_phone = c_phone.text_input("10. Номер телефону:", value=st.session_state.app_phone, placeholder="+380...")
+            
+        if st.button("✨ СФОРМУВАТИ ТЕКСТ ЗАЯВКИ"):
+            # Зберігаємо введені контактні дані
+            st.session_state.app_contact = app_cont
+            st.session_state.app_phone = app_phone
+            
+            d_str = ", ".join(app_drones) if app_drones else "не вказано"
+            dt_r = f"з {app_dates[0].strftime('%d.%m.%Y')} по {app_dates[1].strftime('%d.%m.%Y')}" if isinstance(app_dates, tuple) and len(app_dates) == 2 else app_dates[0].strftime('%d.%m.%Y')
+            contact_info = f"{app_cont}, тел: {app_phone}" if app_phone else app_cont
+            f_txt = f"ЗАЯВКА НА ПОЛІТ\n1. Заявник: в/ч 2196 ({app_unit})\n2. Тип БпЛА: {d_str}\n3. Дата здійснення польоту: {dt_r}\n4. Час роботи: з {a_t1.strftime('%H:%M')} по {a_t2.strftime('%H:%M')}\n5. Населений пункт (маршрут): {app_route}\n6. Висота роботи (м): {a_h}\n7. Радіус роботи (км): {a_r}\n8. Мета польоту: {app_purp}\n9. Контактна особа: {contact_info}"
+            st.code(f_txt, language="text")
+
+    # --- ВКЛАДКА ЦУС ---
     with tab_cus:
         st.header("📡 Дані для ЦУС")
         if not st.session_state.temp_flights:
@@ -280,6 +368,7 @@ else:
             st.subheader("☀️ Після 00:00")
             st.code(fc(a_m), language="text")
 
+    # --- ВКЛАДКА АРХІВ ---
     with tab_hist:
         st.header("📜 Мій журнал")
         df_h = load_data("Sheet1")
@@ -293,6 +382,7 @@ else:
         else:
             st.info("База даних ще не містить записів.")
 
+    # --- ВКЛАДКА АНАЛІТИКА ---
     with tab_stat:
         st.header("📊 Аналітика")
         df_s = load_data("Sheet1")
@@ -317,6 +407,7 @@ else:
             else:
                 st.info("Немає польотів.")
 
+    # --- ВКЛАДКА ДОВІДКА ---
     with tab_info:
         st.header("ℹ️ Довідка")
         c1, c2, c3 = st.columns(3)
@@ -334,21 +425,23 @@ else:
 * При повторному вході дані автоматично підставляться.
 * Натисніть «Увійти».
 
-**2. 📋 Вкладка «Заявка»**
-* Оберіть Типи БпЛА, s/n, період дат, час, маршрут, висоту та радіус.
-* Натисніть «Сформувати текст заявки» та скопіюйте його.
-
-**3. 🚀 Вкладка «Польоти»**
+**2. 🚀 Вкладка «Польоти»**
 * **Крок А (Завдання):** Встановіть Дату, Час зміни та оберіть БпЛА на зміну.
 * **Крок Б (Виліт):** Вкажіть час Взльоту/Посадки, Відстань, Номер АКБ та Цикли.
 * **Крок В (Управління):** Тисніть «➕ Додати у список». В кінці зміни — «🚀 ВІДПРАВИТИ ВСІ ДАНІ».
+
+**3. 📋 Вкладка «Заявка»**
+* УВАГА: Розділ НЕ відправляє заявки автоматично!
+* Оберіть параметри польоту та натисніть «Сформувати текст заявки».
+* Скопіюйте текст та відправте самостійно через месенджери.
 
 **4. 📡 Вкладка «ЦУС»**
 * Система сама розбиває польоти на вікна «До 00:00» та «Після 00:00».
 
 **💡 Поради:**
 * При слабкому інтернеті тисніть «Зберегти в Хмару».
-* Для нічної зміни вказуйте дату, якою зміна почалася.""")
+* Для нічної зміни вказуйте дату, якою зміна почалася.
+* Система автоматично запам'ятовує ваші контактні дані.""")
         with st.expander("📲 ЯК ВСТАНОВИТИ НА СМАРТФОН", expanded=False):
             st.markdown("""**Android (Chrome):** Три крапки (⋮) -> «Додати на головний екран».
 **iPhone (Safari):** Поділитися -> «Додати на початковий екран».""")
