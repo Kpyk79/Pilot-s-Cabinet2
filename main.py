@@ -38,8 +38,8 @@ UNITS = [
     "впс Кодима", "віпс Шершенці", "віпс Загнітків", "впс Станіславка", 
     "віпс Тимкове", "віпс Чорна", "впс Окни", "віпс Ткаченкове", 
     "віпс Гулянка", "віпс Новосеменівка", "впс Великокомарівка", 
-    "віпс Павлівка", "віпс Велика Михайлівка", "віпс Слов'яносербка", 
-    "віпс Гребеники", "впс Степанівка", "віпс Кучурган", 
+    "віпс Павлівка", "впс Велика Михайлівка", "віпс Слов'яносербка", 
+    "віпс Гребеники", "впс Степанівка", "впс Кучурган", 
     "віпс Лиманське", "віпс Лучинське", "УПЗ"
 ]
 ADMIN_PASSWORD = "admin_secret"
@@ -107,11 +107,11 @@ def normalize_df_columns(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
     cols = [str(c).strip().replace('\ufeff', '') for c in df.columns]
+    df = df.copy()
     df.columns = cols
     return df
 
 # safe conn update wrapper
-
 def safe_conn_update(conn, **kwargs):
     try:
         return conn.update(**kwargs)
@@ -125,7 +125,6 @@ def safe_conn_update(conn, **kwargs):
         raise
 
 # helper to load data and normalize columns + strip text fields
-
 def load_data(ws="Sheet1"):
     try:
         df = conn.read(worksheet=ws, ttl=0)
@@ -141,7 +140,6 @@ def load_data(ws="Sheet1"):
         return pd.DataFrame()
 
 # write dataframe to sheet, optionally remove existing rows for a given operator
-
 def write_df_to_sheet(worksheet_name: str, new_df: pd.DataFrame, remove_operator: str | None = None) -> None:
     new_df = normalize_df_columns(new_df)
     try:
@@ -150,7 +148,6 @@ def write_df_to_sheet(worksheet_name: str, new_df: pd.DataFrame, remove_operator
         existing = pd.DataFrame()
 
     if remove_operator and not new_df.empty and 'Оператор' in new_df.columns:
-        # normalize comparison
         op = remove_operator.strip().lower()
         if not existing.empty and 'Оператор' in existing.columns:
             existing = existing[~(existing['Оператор'].astype(str).str.strip().str.lower() == op)]
@@ -165,14 +162,12 @@ def write_df_to_sheet(worksheet_name: str, new_df: pd.DataFrame, remove_operator
     safe_conn_update(conn, worksheet=worksheet_name, data=out)
 
 # remember user in Settings sheet for persistence between sessions
-
 def save_remembered_user(name: str, unit: str):
     try:
         df = pd.DataFrame([{"key": "last_user", "Оператор": name.strip(), "Підрозділ": unit.strip()}])
         safe_conn_update(conn, worksheet="Settings", data=df)
     except Exception:
         traceback.print_exc()
-
 
 def load_remembered_user():
     try:
@@ -191,7 +186,6 @@ def load_remembered_user():
     return '', UNITS[0]
 
 # robust drone lookup: accept different column names
-
 def get_drones_for_unit(unit):
     try:
         df = load_data("DronesDB")
@@ -199,7 +193,7 @@ def get_drones_for_unit(unit):
         # possible name variants
         unit_col = None
         for c in df.columns:
-            if c.lower().strip() in ['підрозділ', 'pidrozdil', 'pidrozdil']:
+            if c.lower().strip() in ['підрозділ', 'pidrozdil', 'unit', 'підрозділ:']:
                 unit_col = c
                 break
         if unit_col is None and 'Підрозділ' in df.columns:
@@ -218,9 +212,7 @@ def get_drones_for_unit(unit):
             cl = c.lower()
             if 'модел' in cl or 'модель' in cl or 'model' in cl:
                 model_col = c
-            if 's/n' in cl or 'sn' == cl or 's_n' in cl or 's/n' in c.lower() or 's/n' in c:
-                sn_col = c
-            if 's/n' in cl or 's/n' in c.lower():
+            if 's/n' in cl or cl == 'sn' or 's_n' in cl or 'serial' in cl:
                 sn_col = c
         # fallback names
         if model_col is None:
@@ -229,7 +221,7 @@ def get_drones_for_unit(unit):
                     model_col = alt
                     break
         if sn_col is None:
-            for alt in ['S/N', 's/n', 's/n', 'SN', 's_n']:
+            for alt in ['S/N', 's/n', 'SN', 's_n', 'S N']:
                 if alt in df.columns:
                     sn_col = alt
                     break
@@ -252,7 +244,6 @@ def get_drones_for_unit(unit):
 
 # --- 4. РОБОТА З БАЗОЮ ТА TG ---
 conn = st.connection("gsheets", type=GSheetsConnection)
-
 
 def send_telegram_msg(all_fl):
     if not TG_TOKEN or not TG_CHAT_ID: return
@@ -278,7 +269,7 @@ def send_telegram_msg(all_fl):
                 photo_data['caption'] = report
                 photo_data['parse_mode'] = 'Markdown'
             media_group.append(photo_data)
-        files = {f'photo{idx}': (img.name, img.getvalue(), getattr(img, 'type', 'image/jpeg')) for idx, img in enumerate(all_photos)}
+        files = {f'photo{idx}': (getattr(img, 'name', f'photo{idx}.jpg'), img.getvalue(), getattr(img, 'type', 'image/jpeg')) for idx, img in enumerate(all_photos)}
         requests.post(
             f"https://api.telegram.org/bot{TG_TOKEN}/sendMediaGroup",
             data={'chat_id': str(TG_CHAT_ID), 'media': json.dumps(media_group)},
@@ -380,7 +371,7 @@ if not st.session_state.logged_in:
 # --- 9. ОСНОВНИЙ ІНТЕРФЕЙС ---
 else:
     st.sidebar.markdown(f"👤 **{st.session_state.user['name'] if st.session_state.role=='Pilot' else 'Адмін'}**")
-    if st.sidebar.button("Вийти"):
+    if st.sidebar.button("Вийти"): 
         st.session_state.logged_in = False
         st.session_state.splash_done = False
         st.rerun()
@@ -463,10 +454,8 @@ else:
                     new_df = pd.DataFrame(st.session_state.temp_flights).drop(columns=['files'], errors='ignore')
                     write_df_to_sheet("Drafts", new_df, remove_operator=st.session_state.user['name'])
                     st.success("💾 Збережено у чернетки (Drafts)!")
-                    # optionally clear temp_flights after saving drafts
-                    # st.session_state.temp_flights = []
                 except Exception:
-                    st.error("Не вдалося зберегти. Подивіться лог /tmp/gspread_api_error.json для деталей.")
+                    st.error("Не вдалося зберегти. Подивіться лог /tmp/gspread_api_error.json для детал��й.")
             if cb3.button("🚀 ВІДПРАВИТИ ВСІ ДАНІ"):
                 all_fl = st.session_state.temp_flights
                 send_telegram_msg(all_fl)
@@ -476,7 +465,6 @@ else:
                     row.pop('files', None)
                     row["Медіа (статус)"] = "З фото" if f.get('files') else "Текст"
                     final_to_db.append(row)
-                db_m = load_data("Sheet1")
                 try:
                     write_df_to_sheet("Sheet1", pd.DataFrame(final_to_db))
                 except Exception:
@@ -489,7 +477,11 @@ else:
                     try:
                         # remove this operator's drafts
                         remaining = df_d[~(df_d['Оператор'].astype(str).str.strip().str.lower() == st.session_state.user['name'].strip().lower())]
-                        safe_conn_update(conn, worksheet="Drafts", data=remaining)
+                        if not remaining.empty:
+                            safe_conn_update(conn, worksheet="Drafts", data=remaining)
+                        else:
+                            # If no remaining drafts, clear the sheet
+                            safe_conn_update(conn, worksheet="Drafts", data=pd.DataFrame())
                     except Exception:
                         st.error("Не вдалося оновити Drafts після відправки. Перевірте лог.")
                         raise
@@ -520,7 +512,8 @@ else:
             c_h1, c_h2 = st.columns(2)
             a_h = c_h1.text_input("6. Висота (м):", "до 500 м")
             a_r = c_h2.text_input("7. Радіус (км):", "до 5 км")
-            app_purp = st.selectbox("8. Мета:", ["патрулювання ділянки відповідальності", "за оперативною необхідністю", "навчально-тренувальні польоти"])            
+            app_purp = st.selectbox("8. Мета:", ["патрулювання ділянки відповідальності", "за оперативною необхідністю", "навчально-тренувальні польоти"])
+            
             c_cont, c_phone = st.columns(2)
             app_cont = c_cont.text_input("9. Контактна особа:", value=st.session_state.app_contact if st.session_state.app_contact else st.session_state.user['name'], placeholder="Прізвище Ім'я")
             app_phone = c_phone.text_input("10. Номер телефону:", value=st.session_state.app_phone, placeholder="+380...")
@@ -626,22 +619,27 @@ else:
             st.markdown("""**1. 🔑 Вхід у систему**
 * Оберіть Підрозділ, введіть Звання та Прізвище.
 * При повторному вході дані автоматично підставляться.
-* Натисніть «Увійти».\n
+* Натисніть «Увійти».
+
 **2. 🚀 Вкладка «Польоти»**
 * **Крок А (Завдання):** Встановіть Дату, Час зміни та оберіть БпЛА на зміну.
 * **Крок Б (Виліт):** Вкажіть час Взльоту/Посадки, Відстань, Номер АКБ та Цикли.
-* **Крок В (Управління):** Тисніть «➕ Додати у список». В кінці зміни — «🚀 ВІДПРАВИТИ ВСІ ДАНІ».\n
+* **Крок В (Управління):** Тисніть «➕ Додати у список». В кінці зміни — «🚀 ВІДПРАВИТИ ВСІ ДАНІ».
+
 **3. 📋 Вкладка «Заявка»**
 * УВАГА: Розділ НЕ відправляє заявки автоматично!
 * Оберіть параметри польоту та натисніть «Сформувати текст заявки».
-* Скопіюйте текст та відправте самостійно через месенджери.\n
+* Скопіюйте текст та відправте самостійно через месенджери.
+
 **4. 📡 Вкладка «ЦУС»**
-* Система сама розбиває польоти на вікна «До 00:00» та «Після 00:00».\n
+* Система сама розбиває польоти на вікна «До 00:00» та «Після 00:00».
+
 **💡 Поради:**
 * При слабкому інтернеті тисніть «Зберегти в Хмару».
 * Для нічної зміни вказуйте дату, якою зміна почалася.
 * Система автоматично запам'ятовує ваші контактні дані.""")
         with st.expander("📲 ЯК ВСТАНОВИТИ НА СМАРТФОН", expanded=False):
-            st.markdown("""**Android (Chrome):** Три крапки (⋮) -> «Додати на головний екран».\n**iPhone (Safari):** Поділитися -> «Додати на початковий екран».""")
+            st.markdown("""**Android (Chrome):** Три крапки (⋮) -> «Додати на головний екран».
+**iPhone (Safari):** Поділитися -> «Додати на початковий екран».""")
         st.write("---")
         st.markdown("<div style='text-align: center; color: black;'>Слава Україні! 🇺🇦</div>", unsafe_allow_html=True)
